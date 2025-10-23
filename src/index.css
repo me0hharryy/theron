@@ -21,3 +21,45 @@
     --color-border: #E0E0E0; /* stone-200 */
   }
 }
+
+/* Add to src/index.css or equivalent global CSS file */
+
+@media print {
+  body {
+    -webkit-print-color-adjust: exact; /* Ensures backgrounds and colors print in Chrome/Safari */
+    print-color-adjust: exact; /* Standard */
+  }
+
+  /* Hide elements not meant for printing */
+  .print\:hidden {
+    display: none !important; /* Use !important to override Tailwind utilities if needed */
+  }
+
+  /* Reset layout for print */
+  .print\:block { display: block !important; }
+  .print\:text-sm { font-size: 0.875rem !important; } /* Example: ensure consistent font size */
+  .print\:p-0 { padding: 0 !important; }
+  .print\:m-0 { margin: 0 !important; }
+  .print\:border-none { border: none !important; }
+  .print\:shadow-none { box-shadow: none !important; }
+
+  /* Ensure print components take full width */
+  #root > div { /* Adjust selector if your root structure is different */
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  /* Specific adjustments for print components if needed */
+  /* e.g., ensure tables print correctly */
+  table {
+      width: 100% !important;
+      border-collapse: collapse !important;
+  }
+  th, td {
+      border: 1px solid #ccc !important; /* Add simple borders for clarity */
+      padding: 4px 8px !important;
+  }
+}
