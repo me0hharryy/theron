@@ -12,6 +12,7 @@ import OrderListPage from './pages/orders/OrderListPage';
 import OrderFormPage from './pages/orders/OrderFormPage';
 import MastersPage from './pages/masters/MastersPage';
 import WorkersPage from './pages/workers/WorkersPage';
+import WorkerDetailPage from './pages/workers/WorkerDetailPage'; 
 import LedgerPage from './pages/ledger/LedgerPage';
 import ReportsPage from './pages/ReportsPage';
 
@@ -34,6 +35,7 @@ function App() {
           <Route path="orders/edit/:orderId" element={<OrderFormPage />} />
           <Route path="masters" element={<MastersPage />} />
           <Route path="workers" element={<WorkersPage />} />
+          <Route path="workers/:workerId" element={<WorkerDetailPage />} /> 
           <Route path="ledger" element={<LedgerPage />} />
           <Route path="reports" element={<ReportsPage />} />
         </Route>

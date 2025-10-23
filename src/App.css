@@ -1,1 +1,23 @@
 @import "tailwindcss";
+
+
+/* We define our color palette as CSS variables under :root.
+  This makes them available globally.
+*/
+@layer base {
+  :root {
+    --color-primary: #44BBA4; /* blue-600 */
+    --color-primary-hover: #3aa18e; /* blue-700 */
+    
+    --color-secondary: #E9E8E5; /* stone-200 */
+    --color-secondary-hover: #D3D0CB; /* stone-300 */
+    
+    --color-background: #F8F9FA; /* stone-50 */
+    --color-card: #FFFFFF; /* white */
+    
+    --color-text-primary: #393E41; /* stone-800 */
+    --color-text-secondary: #6C757D; /* stone-500 */
+    
+    --color-border: #E0E0E0; /* stone-200 */
+  }
+}
