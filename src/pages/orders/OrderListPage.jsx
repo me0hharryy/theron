@@ -62,22 +62,17 @@ const OrderListPage = () => {
 
     // --- Effect to Open Modal Based on Navigation State ---
     useEffect(() => {
-        // Only run if orders are loaded and the state exists
         if (!ordersLoading && orders && orders.length > 0 && location.state?.openOrderDetailsId) {
             const orderIdToOpen = location.state.openOrderDetailsId;
             const orderToOpen = orders.find(order => order.id === orderIdToOpen);
-
             if (orderToOpen) {
-                // IMPORTANT: Use a deep copy to set the state for the modal
-                // This prevents state mutation issues if the modal tries to update the order
-                setDetailModalOrder(JSON.parse(JSON.stringify(orderToOpen)));
+                setDetailModalOrder(JSON.parse(JSON.stringify(orderToOpen))); // Use deep copy
             } else {
-                console.warn(`Order with ID ${orderIdToOpen} not found to open details.`);
+                console.warn(`Order with ID ${orderIdToOpen} not found.`);
             }
-            // IMPORTANT: Clear the state immediately after processing it
-            navigate(location.pathname, { replace: true, state: {} });
+            navigate(location.pathname, { replace: true, state: {} }); // Clear state immediately
         }
-    }, [location.state, orders, ordersLoading, navigate, location.pathname]); // Correct dependencies
+    }, [location.state, orders, ordersLoading, navigate, location.pathname]);
 
 
     // Filter Handlers
@@ -88,20 +83,39 @@ const OrderListPage = () => {
     const resetFilters = () => { setFilters(initialFilterState); setSearchTerm(''); };
 
 
-    // Status Change Handler
+    // --- Status Change Handler (FIXED with deep copy) ---
     const handleStatusChange = async (personIndex, itemIndex, newStatus) => {
         if (!detailModalOrder) return;
+        // Create deep copies to prevent state mutation issues with nested objects/arrays
         const originalOrderState = JSON.parse(JSON.stringify(detailModalOrder));
         const orderToUpdate = JSON.parse(JSON.stringify(detailModalOrder));
+
         try {
-            if (orderToUpdate.people?.[personIndex]?.items?.[itemIndex]) {
-                 if(orderToUpdate.people[personIndex].items[itemIndex].status === newStatus) return;
-                orderToUpdate.people[personIndex].items[itemIndex].status = newStatus;
-                setDetailModalOrder(orderToUpdate); // Optimistic UI
-                await updateDoc(doc(db, getCollectionPath('orders'), detailModalOrder.id), { people: orderToUpdate.people });
-                console.log("Firestore status updated!");
-            } else { throw new Error("Invalid item path for status update"); }
-        } catch (error) { console.error("Error updating status:", error); alert("Failed to update status."); setDetailModalOrder(originalOrderState); }
+            // Safely access the item
+            const itemToUpdate = orderToUpdate.people?.[personIndex]?.items?.[itemIndex];
+
+            if (itemToUpdate) {
+                if(itemToUpdate.status === newStatus) return; // No actual change
+
+                itemToUpdate.status = newStatus; // Update the status in the copy
+
+                // Optimistically update the local modal state
+                setDetailModalOrder(orderToUpdate);
+
+                // Persist only the 'people' array (containing the updated item) to Firestore
+                await updateDoc(doc(db, getCollectionPath('orders'), detailModalOrder.id), {
+                    people: orderToUpdate.people
+                });
+                console.log("Firestore status updated successfully!");
+            } else {
+                throw new Error("Invalid item path for status update");
+            }
+        } catch (error) {
+            console.error("Error updating status:", error);
+            alert("Failed to update status.");
+            // Revert to the original state if the update fails
+            setDetailModalOrder(originalOrderState);
+        }
     };
 
     // Worker Assign Handler
@@ -110,9 +124,10 @@ const OrderListPage = () => {
         const originalOrderState = JSON.parse(JSON.stringify(detailModalOrder));
         const orderToUpdate = JSON.parse(JSON.stringify(detailModalOrder));
         try {
-            if (orderToUpdate.people?.[personIndex]?.items?.[itemIndex]) {
-                if (orderToUpdate.people[personIndex].items[itemIndex][workerType] === workerName) return;
-                orderToUpdate.people[personIndex].items[itemIndex][workerType] = workerName;
+            const itemToUpdate = orderToUpdate.people?.[personIndex]?.items?.[itemIndex];
+            if (itemToUpdate) {
+                if (itemToUpdate[workerType] === workerName) return; // No change
+                itemToUpdate[workerType] = workerName;
                 setDetailModalOrder(orderToUpdate); // Optimistic UI
                 await updateDoc(doc(db, getCollectionPath('orders'), detailModalOrder.id), { people: orderToUpdate.people });
                 console.log(`Worker ${workerType} assigned.`);
@@ -137,20 +152,61 @@ const OrderListPage = () => {
     };
 
     // --- HELPER FUNCTIONS ---
+    // Universal helper to safely retrieve nested date fields
+    const getOrderField = (obj, keys) => {
+      for (const key of keys) {
+        const value = key.split('.').reduce((acc, k) => acc?.[k], obj);
+        if (value) return value;
+      }
+      return null;
+    };
     const formatCurrency = (amount) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(amount || 0);
     const formatDate = (timestamp) => {
-        // This helper is used both for display and PRE-FORMATTING for print
-        if (timestamp && typeof timestamp.toDate === 'function') {
-            return timestamp.toDate().toLocaleDateString('en-GB'); // DD/MM/YYYY
+      if (!timestamp) return 'N/A';
+
+      try {
+        let dateObj = null;
+
+        // Firestore Timestamp object
+        if (typeof timestamp.toDate === 'function') {
+          dateObj = timestamp.toDate();
         }
+        // Firestore timestamp with .seconds
+        else if (timestamp.seconds) {
+          dateObj = new Date(timestamp.seconds * 1000);
+        }
+        // Firestore timestamp with _seconds
+        else if (timestamp._seconds) {
+          dateObj = new Date(timestamp._seconds * 1000);
+        }
+        // ISO or string date
+        else if (typeof timestamp === 'string') {
+          const normalized = timestamp.replace(/-/g, '/');
+          const parsed = new Date(normalized);
+          if (!isNaN(parsed)) dateObj = parsed;
+        }
+        // Native Date object
+        else if (timestamp instanceof Date) {
+          dateObj = timestamp;
+        }
+
+        if (!dateObj || isNaN(dateObj)) return 'N/A';
+
+        return dateObj.toLocaleDateString('en-GB', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+        });
+      } catch (error) {
+        console.error('Date formatting failed:', error, timestamp);
         return 'N/A';
+      }
     };
 
-    // --- PRINT INVOICE HANDLER (Includes Discount/Fees) ---
+    // --- PRINT INVOICE HANDLER (Includes Discount/Fees, Date Fix) ---
     const handlePrintInvoice = () => {
         const invoiceContentElement = document.getElementById('printable-invoice'); if (!invoiceContentElement) return;
         const invoiceContentClone = invoiceContentElement.cloneNode(true);
-        // Remove measurements and specific UI controls meant only for the modal screen
         invoiceContentClone.querySelectorAll('.measurement-section-for-print, .no-print-invoice').forEach(el => el.remove());
 
         const printWindow = window.open('', '_blank', 'height=800,width=800'); if (!printWindow) { alert("Please allow popups."); return; }
@@ -159,42 +215,13 @@ const OrderListPage = () => {
         const orderDateFormatted = formatDate(detailModalOrder?.orderDate);
         const deliveryDateFormatted = formatDate(detailModalOrder?.deliveryDate);
 
-        const printStyles = `
-            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
-            body { font-family: 'Inter', sans-serif; margin: 20px; line-height: 1.5; color: #333; background-color: #fff; font-size: 10pt; }
-            h2, h3, h4, h5 { margin: 0 0 0.5em 0; padding: 0; line-height: 1.3; color: #393E41; }
-            p { margin: 0 0 0.3em 0; }
-            table { width: 100%; border-collapse: collapse; margin-bottom: 1em; }
-            th, td { border-bottom: 1px solid #eee; padding: 0.4em 0.5em; text-align: left; vertical-align: top; }
-            th { background-color: #f8f9fa; font-weight: 600; font-size: 0.9em; text-transform: uppercase; color: #6C757D; }
-            td:last-child, th:last-child { text-align: right; }
-            strong { font-weight: 600; }
-            .invoice-header { text-align: center; margin-bottom: 1.5em; border-bottom: 2px solid #eee; padding-bottom: 1em; }
-            .invoice-header h2 { font-size: 1.8em; font-weight: 700; color: #44BBA4; margin-bottom: 0.1em; }
-            .invoice-header p { font-size: 0.85em; color: #555; }
-            .details-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5em; margin-bottom: 1.5em; padding-bottom: 1em; border-bottom: 1px dashed #ccc; }
-            .details-grid h5 { font-size: 1em; font-weight: 600; color: #44BBA4; margin-bottom: 0.5em; border-bottom: 1px solid #eee; padding-bottom: 0.3em; }
-            .details-grid p { font-size: 0.9em; color: #555; }
-            .items-section h3 { font-size: 1.1em; font-weight: 600; margin-bottom: 0.5em; }
-            .item-notes { font-size: 0.8em; color: #666; font-style: italic; padding-left: 1em; margin-top: 0.2em;}
-            .totals-section { display: flex; justify-content: flex-end; margin-top: 1.5em; padding-top: 1em; border-top: 2px solid #eee; }
-            .totals-box { width: 100%; max-width: 280px; font-size: 0.9em; }
-            .totals-box div { display: flex; justify-content: space-between; margin-bottom: 0.3em; }
-            .totals-box span:first-child { color: #555; padding-right: 1em; }
-            .totals-box span:last-child { font-weight: 600; color: #333; min-width: 80px; text-align: right; font-family: monospace;}
-            .totals-box .grand-total span { font-weight: 700; font-size: 1.1em; color: #393E41;}
-            .totals-box .due span:last-child { color: #D97706; } /* Orange for due */
-            .footer { margin-top: 2em; text-align: center; font-size: 0.8em; color: #888; border-top: 1px dashed #ccc; padding-top: 0.8em; }
-            /* This class is used in the modal for UI controls not meant for printing */
-            .no-print, .no-print-invoice { display: none !important; } 
-        `;
+        const printStyles = ` @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap'); body { font-family: 'Inter', sans-serif; margin: 20px; line-height: 1.5; color: #333; background-color: #fff; font-size: 10pt; } h2, h3, h4, h5 { margin: 0 0 0.5em 0; padding: 0; line-height: 1.3; color: #393E41; } p { margin: 0 0 0.3em 0; } table { width: 100%; border-collapse: collapse; margin-bottom: 1em; } th, td { border-bottom: 1px solid #eee; padding: 0.4em 0.5em; text-align: left; vertical-align: top; } th { background-color: #f8f9fa; font-weight: 600; font-size: 0.9em; text-transform: uppercase; color: #6C757D; } td:last-child, th:last-child { text-align: right; } strong { font-weight: 600; } .invoice-header { text-align: center; margin-bottom: 1.5em; border-bottom: 2px solid #eee; padding-bottom: 1em; } .invoice-header h2 { font-size: 1.8em; font-weight: 700; color: #44BBA4; margin-bottom: 0.1em; } .invoice-header p { font-size: 0.85em; color: #555; } .details-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5em; margin-bottom: 1.5em; padding-bottom: 1em; border-bottom: 1px dashed #ccc; } .details-grid h5 { font-size: 1em; font-weight: 600; color: #44BBA4; margin-bottom: 0.5em; border-bottom: 1px solid #eee; padding-bottom: 0.3em; } .details-grid p { font-size: 0.9em; color: #555; } .items-section h3 { font-size: 1.1em; font-weight: 600; margin-bottom: 0.5em; } .item-notes { font-size: 0.8em; color: #666; font-style: italic; padding-left: 1em; margin-top: 0.2em;} .totals-section { display: flex; justify-content: flex-end; margin-top: 1.5em; padding-top: 1em; border-top: 2px solid #eee; } .totals-box { width: 100%; max-width: 280px; font-size: 0.9em; } .totals-box div { display: flex; justify-content: space-between; margin-bottom: 0.3em; } .totals-box span:first-child { color: #555; padding-right: 1em; } .totals-box span:last-child { font-weight: 600; color: #333; min-width: 80px; text-align: right; font-family: monospace;} .totals-box .grand-total span { font-weight: 700; font-size: 1.1em; color: #393E41;} .totals-box .due span:last-child { color: #D97706; } /* Orange for due */ .footer { margin-top: 2em; text-align: center; font-size: 0.8em; color: #888; border-top: 1px dashed #ccc; padding-top: 0.8em; } .no-print, .no-print-invoice { display: none !important; } `;
 
-        // --- Get data needed for print from detailModalOrder ---
-        const orderData = detailModalOrder; // Use the state holding the modal data
+        const orderData = detailModalOrder;
         const validPeopleForPrint = orderData.people?.filter(p => p.name && p.items?.some(i => i.name)) || [];
-        const additionalFees = orderData.payment?.additionalFees || []; // Get fees
+        const additionalFees = orderData.payment?.additionalFees || [];
 
-        // --- UPDATED HTML STRUCTURE FOR PRINT (Includes Discount/Fees) ---
+        // --- Use the pre-formatted date strings ---
         const invoiceHTML = `
             <div class="invoice-header"> <h2>THERON Tailors</h2> <p>Order Slip / Invoice</p> <p>Order ID: <strong>${orderData.billNumber || 'N/A'}</strong></p> </div>
             <div class="details-grid"> <div> <h5>Customer Details:</h5> <p>Name: ${orderData.customer?.name || 'N/A'}</p> <p>Phone: ${orderData.customer?.number || 'N/A'}</p> </div> <div> <h5>Order Dates:</h5> <p>Order Date: ${orderDateFormatted}</p> <p>Delivery Date: ${deliveryDateFormatted}</p> </div> </div>
@@ -221,7 +248,6 @@ const OrderListPage = () => {
             </div>
             <div class="totals-section">
                 <div class="totals-box">
-                    {/* Display Subtotal, Fees, Discount, Total, Advance, Pending */}
                     <div><span>Subtotal:</span> <span>${formatCurrency(orderData.payment?.subtotal)}</span></div>
                     ${additionalFees.map(fee => `<div><span>${fee.description || 'Additional Fee'}:</span> <span>${formatCurrency(fee.amount)}</span></div>`).join('')}
                     ${orderData.payment?.calculatedDiscount > 0 ? `<div><span>Discount (${orderData.payment?.discountType === 'percent' ? `${orderData.payment?.discountValue}%` : 'Fixed'}):</span> <span>-${formatCurrency(orderData.payment?.calculatedDiscount)}</span></div>` : ''}
@@ -266,8 +292,15 @@ const OrderListPage = () => {
                         <div className="flex flex-col sm:flex-row sm:items-end gap-2 lg:col-span-1"> <div className="flex items-center h-10 mt-auto mb-1 flex-grow"> <input id="pendingPayment" name="pendingPayment" type="checkbox" checked={filters.pendingPayment} onChange={handleFilterChange} className="h-4 w-4 rounded border-gray-300 text-[#44BBA4] focus:ring-[#44BBA4]" /> <label htmlFor="pendingPayment" className="ml-2 block text-sm font-medium text-[#6C757D]"> Has Pending Payment </label> </div> <Button onClick={resetFilters} variant="secondary" className="flex items-center gap-1 text-xs px-2 py-1.5 mt-auto" title="Reset Filters"> <XCircleIcon /> Reset </Button> </div>
                     </div>
                 )}
-                 {/* Added keyframes for filter animation */}
-                 <style jsx="true" global="true">{` @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } } .animate-fade-in { animation: fadeIn 0.3s ease-out forwards; } `}</style>
+                 <style>{`
+                   @keyframes fadeIn {
+                     from { opacity: 0; transform: translateY(-10px); }
+                     to { opacity: 1; transform: translateY(0); }
+                   }
+                   .animate-fade-in {
+                     animation: fadeIn 0.3s ease-out forwards;
+                   }
+                 `}</style>
 
 
                 {/* Orders Table */}
@@ -275,7 +308,7 @@ const OrderListPage = () => {
                 <div className="overflow-x-auto">
                     <div className="mb-2 text-sm text-gray-500"> Showing {filteredOrders.length} of {orders?.length || 0} orders </div>
                     <table className="w-full min-w-[768px] text-left text-sm">
-                        <thead className="border-b-2 border-[#E0E0E0] bg-gray-50"> <tr> <th className="px-4 py-3 font-semibold uppercase text-[#6C757D] tracking-wider">Order ID</th> <th className="px-4 py-3 font-semibold uppercase text-[#6C757D] tracking-wider">Customer</th> <th className="px-4 py-3 font-semibold uppercase text-[#6C757D] tracking-wider">Delivery Date</th> <th className="px-4 py-3 font-semibold uppercase text-[#6C7J_LOGGER_API_CHANNEL_NAME_NOT_SETD] tracking-wider text-right">Total (₹)</th> <th className="px-4 py-3 font-semibold uppercase text-[#6C757D] tracking-wider text-right">Pending (₹)</th> <th className="px-4 py-3 font-semibold uppercase text-[#6C757D] tracking-wider text-center">Actions</th> </tr> </thead>
+                        <thead className="border-b-2 border-[#E0E0E0] bg-gray-50"> <tr> <th className="px-4 py-3 font-semibold uppercase text-[#6C757D] tracking-wider">Order ID</th> <th className="px-4 py-3 font-semibold uppercase text-[#6C757D] tracking-wider">Customer</th> <th className="px-4 py-3 font-semibold uppercase text-[#6C757D] tracking-wider">Delivery Date</th> <th className="px-4 py-3 font-semibold uppercase text-[#6C757D] tracking-wider text-right">Total (₹)</th> <th className="px-4 py-3 font-semibold uppercase text-[#6C757D] tracking-wider text-right">Pending (₹)</th> <th className="px-4 py-3 font-semibold uppercase text-[#6C757D] tracking-wider text-center">Actions</th> </tr> </thead>
                         <tbody className="divide-y divide-[#E0E0E0]">
                             {filteredOrders.length > 0 ? filteredOrders.map(order => (
                                 <tr key={order.id} className="hover:bg-gray-50 transition-colors">
@@ -284,7 +317,12 @@ const OrderListPage = () => {
                                     <td className="px-4 py-3 text-[#393E41]">{formatDate(order.deliveryDate)}</td>
                                     <td className="px-4 py-3 text-right font-mono text-[#393E41]">{formatCurrency(order.payment?.total)}</td>
                                     <td className={`px-4 py-3 text-right font-mono font-semibold ${(order.payment?.pending || 0) > 0 ? 'text-orange-600' : 'text-green-600'}`}>{formatCurrency(order.payment?.pending)}</td>
-                                    <td className="px-4 py-3"> <div className="flex justify-center items-center gap-1.5"> <Button onClick={() => setDetailModalOrder(JSON.parse(JSON.stringify(order)))} variant="secondary" className="px-2 py-1 text-xs">Details</Button> <Button onClick={() => navigate(`/orders/edit/${order.id}`)} variant="secondary" className="p-1.5" aria-label={`Edit order ${order.billNumber}`}><EditIcon /></Button> <Button onClick={() => handleDeleteOrder(order.id, order.billNumber)} variant="danger" className="p-1.5" aria-label={`Delete order ${order.billNumber}`}><TrashIcon /></Button> </div> </td>
+                                    <td className="px-4 py-3"> <div className="flex justify-center items-center gap-1.5">
+                                        {/* Pass deep copy on button click too */}
+                                        <Button onClick={() => setDetailModalOrder(JSON.parse(JSON.stringify(order)))} variant="secondary" className="px-2 py-1 text-xs">Details</Button>
+                                        <Button onClick={() => navigate(`/orders/edit/${order.id}`)} variant="secondary" className="p-1.5" aria-label={`Edit order ${order.billNumber}`}><EditIcon /></Button>
+                                        <Button onClick={() => handleDeleteOrder(order.id, order.billNumber)} variant="danger" className="p-1.5" aria-label={`Delete order ${order.billNumber}`}><TrashIcon /></Button>
+                                    </div> </td>
                                 </tr>
                             )) : ( <tr><td colSpan="6" className="py-10 text-center text-[#6C757D]">No orders found matching criteria.</td></tr> )}
                         </tbody>
@@ -304,7 +342,26 @@ const OrderListPage = () => {
                         {/* Details Grid */}
                         <div className="grid grid-cols-2 gap-4 mb-4 border-b pb-4 details-grid">
                             <div> <h5 className="font-semibold text-[#393E41]">Customer Details:</h5> <p>Name: {detailModalOrder?.customer?.name}</p> <p>Phone: {detailModalOrder?.customer?.number}</p> </div>
-                            <div> <h5 className="font-semibold text-[#393E41]">Order Dates:</h5> <p>Order Date: {formatDate(detailModalOrder?.orderDate)}</p> <p>Delivery Date: {formatDate(detailModalOrder?.deliveryDate)}</p> </div>
+                            <div> <h5 className="font-semibold text-[#393E41]">Order Dates:</h5>
+                                <p>
+                                  Order Date: {formatDate(getOrderField(detailModalOrder, [
+                                    'orderDate',
+                                    'order_date',
+                                    'dates.orderDate',
+                                    'orderInfo.orderDate',
+                                    'orderDetails.orderDate'
+                                  ]))}
+                                </p>
+                                <p>
+                                  Delivery Date: {formatDate(getOrderField(detailModalOrder, [
+                                    'deliveryDate',
+                                    'delivery_date',
+                                    'dates.deliveryDate',
+                                    'orderInfo.deliveryDate',
+                                    'orderDetails.deliveryDate'
+                                  ]))}
+                                </p>
+                            </div>
                         </div>
                         {/* Items List Section */}
                         <div className="space-y-4 items-section">
@@ -313,7 +370,7 @@ const OrderListPage = () => {
                                     <h4 className="text-lg font-semibold text-[#393E41] mb-2">{person.name || `Person ${pIdx + 1}`}</h4>
                                     {person.items?.map((item, iIdx) => (
                                         <div key={item.id || `modal-item-${iIdx}`} className="mt-3 border-t border-[#E0E0E0] pt-3">
-                                            {/* Item Header (Fixed Layout) */}
+                                            {/* Item Header */}
                                             <div className="flex justify-between items-start item-card-header mb-1">
                                                 <div className="flex-grow mr-2"> <span className="font-semibold text-[#44BBA4] item-name block break-words">{item.name || 'N/A'}</span> <span className="font-semibold text-sm text-gray-700 item-price block">{formatCurrency(item.price)}</span> </div>
                                                 <div className="flex-shrink-0 no-print mt-1 no-print-invoice"> <Button onClick={() => handlePrintMeasurements(person.name, item)} variant="secondary" className="px-2 py-1 text-xs flex items-center gap-1" disabled={!item.measurements || Object.values(item.measurements).every(v => !v)} aria-label={`Print measurements for ${item.name}`}> <RulerIcon /> Print Meas. </Button> </div>
@@ -332,7 +389,7 @@ const OrderListPage = () => {
                             ))}
                             {!detailModalOrder?.people?.length && <p className="text-center text-[#6C757D]">No people or items found.</p>}
                         </div>
-                        {/* Payment Summary (Includes Discount/Fees) */}
+                        {/* Payment Summary */}
                         <div className="mt-6 border-t pt-4 payment-summary">
                             <h5 className="text-lg font-semibold text-[#393E41]">Payment Summary</h5>
                             <div className="flex justify-end mt-2 text-sm">
