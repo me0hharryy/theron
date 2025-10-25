@@ -12,7 +12,7 @@ import Spinner from '../../components/ui/Spinner';
 import Select from '../../components/ui/Select'; // Import Select
 
 // --- Icons --- (Using react-icons/fi)
-import { FiEdit, FiTrash2, FiPlus, FiUsers, FiUser, FiTool, FiPhone, FiList, FiSearch, FiTag } from 'react-icons/fi';
+import { FiEdit, FiTrash2, FiPlus, FiUsers, FiUser, FiTool, FiPhone, FiList, FiSearch, FiTag,  } from 'react-icons/fi';
 
 // Define categories - adjust as needed
 const WORKER_CATEGORIES = ['Cutter', 'Sewer', 'Finisher', 'Helper', 'Manager', 'Other'];

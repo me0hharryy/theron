@@ -13,7 +13,8 @@ import Select from '../../components/ui/Select';
 
 // --- Icons --- (Using react-icons for consistency)
 import {
-    FiPlus, FiEdit, FiPrinter, FiTrash2, FiFilter, FiX, FiRuler, FiSend, FiList, FiAlertCircle, FiCalendar
+    FiPlus, FiEdit, FiPrinter, FiTrash2, FiFilter, FiX, FiMaximize, // Replaced FiRuler with FiMaximize
+    FiSend, FiList, FiAlertCircle, FiCalendar, FiScissors, FiPocket
 } from 'react-icons/fi';
 
 const ITEM_STATUS_OPTIONS = ['Received', 'Cutting', 'Sewing', 'Ready for Trial', 'Delivered'];
@@ -93,7 +94,7 @@ const FilterSection = ({ filters, onFilterChange, onResetFilters, itemStatusOpti
 
 // --- Main Component ---
 const OrderListPage = () => {
-    const { orders, ordersLoading, workers } = useData();
+    const { orders, ordersLoading, workers } = useData(); // Get workers data
     const [searchTerm, setSearchTerm] = useState('');
     const [detailModalOrder, setDetailModalOrder] = useState(null);
     const navigate = useNavigate();
@@ -105,16 +106,25 @@ const OrderListPage = () => {
     const [filters, setFilters] = useState(initialFilterState);
     const [showFilters, setShowFilters] = useState(false);
 
-    // Memoized worker options
+    // Memoized worker options based on category
     const workerOptions = useMemo(() => {
-        if (!workers) return { cutters: [], sewers: [] };
-        return {
-            cutters: workers.filter(w => w.specialization?.toLowerCase().includes('cut')).map(w => ({ value: w.name, label: w.name })),
-            sewers: workers.filter(w => w.specialization?.toLowerCase().includes('sew')).map(w => ({ value: w.name, label: w.name })),
-        };
+        if (!workers || !Array.isArray(workers) || workers.length === 0) {
+             return { cutters: [], sewers: [] };
+        }
+        const cutters = [];
+        const sewers = [];
+        workers.forEach(w => {
+            const categoryLower = (typeof w.category === 'string') ? w.category.trim().toLowerCase() : null;
+            if (categoryLower === 'cutter') {
+                cutters.push({ value: w.name, label: w.name });
+            } else if (categoryLower === 'sewer') {
+                sewers.push({ value: w.name, label: w.name });
+            }
+        });
+        return { cutters, sewers };
     }, [workers]);
 
-    // Combined Search and Filter Logic (Corrected Date Handling)
+    // Combined Search and Filter Logic
     const filteredOrders = useMemo(() => {
         if (!orders) return [];
         const lowerSearchTerm = searchTerm.toLowerCase();
@@ -212,8 +222,6 @@ const OrderListPage = () => {
         if (!customer?.number) { alert("Customer phone number not available."); return; }
         const message = `Hi ${customer.name || 'Customer'}, update on order ${detailModalOrder?.billNumber}: Item '${item.name || 'Unknown'}' is now '${item.status || 'Updated'}'. - Theron Tailors`;
         alert(`Notification simulated for ${customer.name}.\nMessage: ${message}`);
-        // Consider using WhatsApp API or SMS gateway here
-        // Example: window.open(`https://wa.me/${customer.number}?text=${encodeURIComponent(message)}`, '_blank');
     };
 
     // Delete Order Handler (Includes Transaction Deletion)
@@ -224,24 +232,25 @@ const OrderListPage = () => {
             try {
                 const orderPath = getCollectionPath('orders');
                 const transPath = getCollectionPath('transactions');
+                // Query transactions linked to this orderRef where type is Income (advance)
                 const transQuery = query(collection(db, transPath), where("orderRef", "==", orderId), where("type", "==", "Income"));
                 const querySnapshot = await getDocs(transQuery);
                 const transDocsToDelete = querySnapshot.docs.map(doc => doc.ref);
 
                 const batch = writeBatch(db);
                 batch.delete(doc(db, orderPath, orderId)); // Delete order
-                transDocsToDelete.forEach(docRef => batch.delete(docRef)); // Delete transactions
+                transDocsToDelete.forEach(docRef => batch.delete(docRef)); // Delete linked transactions
 
-                await batch.commit();
-                console.log(`Order ${orderId} and ${transDocsToDelete.length} transaction(s) deleted.`);
-                if (detailModalOrder?.id === orderId) setDetailModalOrder(null);
+                await batch.commit(); // Execute batch
+                console.log(`Order ${orderId} and ${transDocsToDelete.length} related transaction(s) deleted.`);
+                if (detailModalOrder?.id === orderId) setDetailModalOrder(null); // Close modal if open
             } catch (error) { console.error("Error deleting order:", error); alert("Failed to delete order."); }
             finally { setIsDeleting(false); }
         }
     };
 
     // --- HELPER FUNCTIONS ---
-    const getOrderField = (obj, keys) => { /* ... (same as before) ... */
+    const getOrderField = (obj, keys) => {
       for (const key of keys) {
         const value = key.split('.').reduce((acc, k) => acc?.[k], obj);
         if (value) return value;
@@ -249,7 +258,7 @@ const OrderListPage = () => {
       return null;
     };
     const formatCurrency = (amount) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(amount || 0);
-    const formatDate = (timestamp) => { /* ... (same as before) ... */
+    const formatDate = (timestamp) => {
         if (!timestamp) return 'N/A';
         try {
             let dateObj = null;
@@ -264,7 +273,7 @@ const OrderListPage = () => {
     };
 
     // --- PRINT INVOICE HANDLER ---
-    const handlePrintInvoice = () => { /* ... (same as before) ... */
+    const handlePrintInvoice = () => {
         const invoiceContentElement = document.getElementById('printable-invoice'); if (!invoiceContentElement) return;
         const printWindow = window.open('', '_blank', 'height=800,width=800'); if (!printWindow) { alert("Please allow popups."); return; }
         const orderDateFormatted = formatDate(detailModalOrder?.orderDate);
@@ -280,11 +289,12 @@ const OrderListPage = () => {
     };
 
     // Print Measurements Handler
-    const handlePrintMeasurements = (personName, item) => { /* ... (same as before) ... */
+    const handlePrintMeasurements = (personName, item) => {
         if (!item || !item.measurements || typeof item.measurements !== 'object') { alert('No measurements available.'); return; } const measurementEntries = Object.entries(item.measurements).filter(([, value]) => value); if (measurementEntries.length === 0) { alert('No measurements recorded.'); return; } const printWindow = window.open('', '_blank', 'height=500,width=400'); if (!printWindow) { alert("Please allow popups."); return; } const measurementStyles = ` body { font-family: monospace; margin: 5px; font-size: 12px; line-height: 1.4; max-width: 280px; word-wrap: break-word; } h3 { font-size: 14px; font-weight: bold; margin: 10px 0 5px 0; text-transform: uppercase; border-top: 1px dashed #000; padding-top: 5px;} p { font-size: 11px; margin: 0 0 8px 0; } strong { font-weight: bold; } ul { list-style: none; padding: 0; margin: 0 0 10px 0; } li { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 2px; border-bottom: 1px dotted #ccc; padding-bottom: 2px; } li span:first-child { padding-right: 10px; flex-shrink: 0; } li span:last-child { font-weight: bold; text-align: right; } .header-info { margin-bottom: 10px; } .divider { border-top: 1px dashed #000; margin: 8px 0; } `; const measurementHTML = ` <h3>${item.name || 'Item'} Measurements</h3> <div class="header-info"> <p><strong>Order:</strong> ${detailModalOrder?.billNumber || 'N/A'}</p> <p><strong>Cust:</strong> ${detailModalOrder?.customer?.name || 'N/A'}</p> <p><strong>Person:</strong> ${personName || 'N/A'}</p> </div> <div class="divider"></div> <ul> ${measurementEntries.map(([key, value]) => `<li><span>${key}:</span> <span>${value}</span></li>`).join('')} </ul> `; printWindow.document.write(`<html><head><title>Meas: ${item.name}</title><style>${measurementStyles}</style></head><body>${measurementHTML}</body></html>`); printWindow.document.close(); printWindow.focus(); setTimeout(() => { printWindow.print(); printWindow.close(); }, 250);
     };
 
 
+    // --- RENDER ---
     return (
         <div className="space-y-6">
             <header>
@@ -323,7 +333,7 @@ const OrderListPage = () => {
                     </div>
                 </div>
 
-                {/* --- Filter Section Component --- */}
+                {/* Filter Section Component */}
                 <FilterSection
                     filters={filters}
                     onFilterChange={handleFilterChange}
@@ -408,8 +418,8 @@ const OrderListPage = () => {
 
             {/* Order Detail Modal */}
             <Modal isOpen={!!detailModalOrder} onClose={() => setDetailModalOrder(null)} title={`Order Details: ${detailModalOrder?.billNumber || ''}`}>
-                <div className="max-h-[calc(100vh-14rem)] overflow-y-auto pr-3"> {/* Scrollable content */}
-                    <div id="printable-invoice"> {/* Content to be potentially printed */}
+                <div className="max-h-[calc(100vh-14rem)] overflow-y-auto pr-3">
+                    <div id="printable-invoice">
                         {/* Details Grid */}
                         <div className="grid grid-cols-2 gap-4 mb-4 border-b pb-4 details-grid">
                             <div> <h5 className="font-semibold text-[#393E41]">Customer:</h5> <p>{detailModalOrder?.customer?.name}</p> <p>{detailModalOrder?.customer?.number}</p> </div>
@@ -433,19 +443,64 @@ const OrderListPage = () => {
                                                     <span className="font-semibold text-sm text-gray-700 item-price block">{formatCurrency(item.price)}</span>
                                                 </div>
                                                 <div className="flex-shrink-0 no-print mt-1 no-print-invoice">
-                                                    <Button onClick={() => handlePrintMeasurements(person.name, item)} variant="secondary" className="px-2 py-1 text-xs flex items-center gap-1" disabled={!item.measurements || Object.values(item.measurements).every(v => !v)} aria-label={`Print measurements for ${item.name}`}> <FiRuler /> Print Meas. </Button>
+                                                    <Button
+                                                        onClick={() => handlePrintMeasurements(person.name, item)}
+                                                        variant="secondary"
+                                                        className="px-2 py-1 text-xs flex items-center gap-1"
+                                                        disabled={!item.measurements || Object.values(item.measurements).every(v => !v)}
+                                                        aria-label={`Print measurements for ${item.name}`}
+                                                    >
+                                                        <FiMaximize size={14}/> Print Meas. {/* Using FiMaximize */}
+                                                    </Button>
                                                 </div>
                                             </div>
-                                            {/* Measurement Section (for print view mainly) */}
-                                            <div className="measurement-section-for-print"> {/* ... (measurement list rendering) ... */} </div>
+                                            {/* Measurement Section */}
+                                            <div className="measurement-section-for-print text-xs text-[#6C757D] mt-2">
+                                                {item.measurements && typeof item.measurements === 'object' && Object.values(item.measurements).some(v => v) ? (
+                                                    <>
+                                                    <strong className="text-[#393E41] font-medium block mb-1">Measurements:</strong>
+                                                    <ul className="list-disc list-inside grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1 measurements-list">
+                                                        {Object.entries(item.measurements).filter(([, value]) => value).map(([key, value]) => ( <li key={key}>{key}: <strong>{value}</strong></li> ))}
+                                                    </ul>
+                                                    </>
+                                                ) : null}
+                                            </div>
                                             {/* Notes & Design */}
                                             {item.notes && <p className="text-xs text-[#393E41] mt-2 italic item-notes">Notes: {item.notes}</p>}
                                             {item.designPhoto && <p className="text-xs mt-1 no-print no-print-invoice"><a href={item.designPhoto} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">View Design</a></p>}
+
                                             {/* Status & Assignment Controls */}
                                             <div className="mt-3 grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-3 no-print no-print-invoice">
-                                                <Select label="Status" id={`status-${pIdx}-${iIdx}`} value={item.status || 'Received'} onChange={(e) => handleStatusChange(pIdx, iIdx, e.target.value)}> {ITEM_STATUS_OPTIONS.map(s => <option key={s}>{s}</option>)} </Select>
-                                                <Select label="Cutter" id={`cutter-${pIdx}-${iIdx}`} value={item.cutter || ''} onChange={e => handleWorkerAssign(pIdx, iIdx, 'cutter', e.target.value)}> <option value="">Unassigned</option> {workerOptions.cutters.map(w => <option key={w.value} value={w.value}>{w.label}</option>)} </Select>
-                                                <Select label="Sewer" id={`sewer-${pIdx}-${iIdx}`} value={item.sewer || ''} onChange={e => handleWorkerAssign(pIdx, iIdx, 'sewer', e.target.value)}> <option value="">Unassigned</option> {workerOptions.sewers.map(w => <option key={w.value} value={w.value}>{w.label}</option>)} </Select>
+                                                <Select
+                                                    label="Status"
+                                                    id={`status-${pIdx}-${iIdx}`}
+                                                    value={item.status || 'Received'}
+                                                    onChange={(e) => handleStatusChange(pIdx, iIdx, e.target.value)}
+                                                >
+                                                    {ITEM_STATUS_OPTIONS.map(s => <option key={s}>{s}</option>)}
+                                                </Select>
+                                                {/* Assign Cutter Dropdown */}
+                                                <Select
+                                                    label={<span className="flex items-center gap-1"><FiScissors size={14}/> Cutter</span>}
+                                                    id={`cutter-${pIdx}-${iIdx}`}
+                                                    value={item.cutter || ''}
+                                                    onChange={e => handleWorkerAssign(pIdx, iIdx, 'cutter', e.target.value)}
+                                                >
+                                                    <option value="">Unassigned</option>
+                                                    {/* Map over filtered cutters */}
+                                                    {workerOptions.cutters.map(w => <option key={w.value} value={w.value}>{w.label}</option>)}
+                                                </Select>
+                                                {/* Assign Sewer Dropdown */}
+                                                <Select
+                                                    label={<span className="flex items-center gap-1"><FiPocket size={14}/> Sewer</span>}
+                                                    id={`sewer-${pIdx}-${iIdx}`}
+                                                    value={item.sewer || ''}
+                                                    onChange={e => handleWorkerAssign(pIdx, iIdx, 'sewer', e.target.value)}
+                                                >
+                                                    <option value="">Unassigned</option>
+                                                     {/* Map over filtered sewers */}
+                                                    {workerOptions.sewers.map(w => <option key={w.value} value={w.value}>{w.label}</option>)}
+                                                </Select>
                                             </div>
                                             {/* Notify Button */}
                                             <div className="mt-3 text-right no-print no-print-invoice">
@@ -463,7 +518,6 @@ const OrderListPage = () => {
                             <h5 className="text-lg font-semibold text-[#393E41]">Payment Summary</h5>
                             <div className="flex justify-end mt-2 text-sm">
                                 <div className="w-full max-w-xs space-y-1">
-                                    {/* Subtotal, Fees, Discount, Total, Advance, Pending */}
                                     <div className="flex justify-between"> <span className="text-[#6C757D]">Subtotal:</span> <span className="font-mono text-[#393E41]">{formatCurrency(detailModalOrder?.payment?.subtotal)}</span> </div>
                                     {(detailModalOrder?.payment?.additionalFees || []).map((fee, idx) => ( <div key={idx} className="flex justify-between"> <span className="text-[#6C757D]">{fee.description || 'Fee'}:</span> <span className="font-mono text-[#393E41]">{formatCurrency(fee.amount)}</span> </div> ))}
                                     {detailModalOrder?.payment?.calculatedDiscount > 0 && ( <div className="flex justify-between"> <span className="text-[#6C757D]">Discount:</span> <span className="font-mono text-green-600">-{formatCurrency(detailModalOrder?.payment?.calculatedDiscount)}</span> </div> )}
@@ -476,7 +530,7 @@ const OrderListPage = () => {
                     </div> {/* End #printable-invoice */}
                 </div> {/* End Scrollable Wrapper */}
 
-                {/* Modal Footer (Fixed Position) */}
+                {/* Modal Footer */}
                 <div className="flex justify-end gap-3 pt-4 border-t mt-4 no-print">
                      <Button type="button" onClick={handlePrintInvoice} variant="secondary" className="flex items-center gap-2"> <FiPrinter /> Print Invoice </Button>
                      <Button type="button" onClick={() => setDetailModalOrder(null)} variant="primary"> Close </Button>
