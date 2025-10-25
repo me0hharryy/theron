@@ -14,7 +14,7 @@ import Select from '../../components/ui/Select';
 // --- Icons --- (Using react-icons for consistency)
 import {
     FiPlus, FiEdit, FiPrinter, FiTrash2, FiFilter, FiX, FiMaximize, // Replaced FiRuler with FiMaximize
-    FiSend, FiList, FiAlertCircle, FiCalendar, FiScissors, FiPocket
+    FiMessageSquare, FiList, FiAlertCircle, FiCalendar, FiScissors, FiPocket // Using FiMessageSquare for notify
 } from 'react-icons/fi';
 
 const ITEM_STATUS_OPTIONS = ['Received', 'Cutting', 'Sewing', 'Ready for Trial', 'Delivered'];
@@ -217,12 +217,37 @@ const OrderListPage = () => {
         } catch (error) { console.error(`Error assigning ${workerType}:`, error); alert(`Failed to assign ${workerType}.`); setDetailModalOrder(originalOrderState); }
     };
 
-    // Notify Handler
-    const handleNotify = (customer, item) => {
-        if (!customer?.number) { alert("Customer phone number not available."); return; }
-        const message = `Hi ${customer.name || 'Customer'}, update on order ${detailModalOrder?.billNumber}: Item '${item.name || 'Unknown'}' is now '${item.status || 'Updated'}'. - Theron Tailors`;
-        alert(`Notification simulated for ${customer.name}.\nMessage: ${message}`);
+    // Notify Handler - Opens WhatsApp
+    const handleNotify = (customer, item, orderBillNumber) => {
+        // 1. Validate Phone Number
+        if (!customer?.number) {
+            alert("Customer phone number not available.");
+            return;
+        }
+        // 2. Basic phone number cleanup (remove spaces, hyphens)
+        let phoneNumber = customer.number.replace(/[\s\-]+/g, '');
+        // 3. Prepend country code if necessary (Example for India) - ADJUST AS NEEDED
+        if (phoneNumber.length === 10 && !phoneNumber.startsWith('91')) {
+            phoneNumber = `91${phoneNumber}`;
+        }
+         phoneNumber = phoneNumber.replace(/^\+|^00/, ''); // Ensure no leading +/00
+
+        // 4. Construct the Message
+        const customerName = customer.name ? `, ${customer.name}` : '';
+        const itemName = item.name || 'Your item';
+        const itemStatus = item.status || 'updated';
+        const orderId = orderBillNumber || 'N/A';
+        const message = `Namaste${customerName},\nUpdate from Theron Tailors for Order ${orderId}:\n'${itemName}' is now '${itemStatus}'.\n\nThank you!`;
+
+        // 5. Encode and Construct URL
+        const encodedMessage = encodeURIComponent(message);
+        const whatsappUrl = `https://wa.me/${phoneNumber}?text=${encodedMessage}`;
+
+        // 6. Open WhatsApp Link
+        console.log("Attempting to open WhatsApp URL:", whatsappUrl);
+        window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
     };
+
 
     // Delete Order Handler (Includes Transaction Deletion)
     const handleDeleteOrder = async (orderId, orderBillNumber) => {
@@ -232,7 +257,6 @@ const OrderListPage = () => {
             try {
                 const orderPath = getCollectionPath('orders');
                 const transPath = getCollectionPath('transactions');
-                // Query transactions linked to this orderRef where type is Income (advance)
                 const transQuery = query(collection(db, transPath), where("orderRef", "==", orderId), where("type", "==", "Income"));
                 const querySnapshot = await getDocs(transQuery);
                 const transDocsToDelete = querySnapshot.docs.map(doc => doc.ref);
@@ -257,7 +281,7 @@ const OrderListPage = () => {
       }
       return null;
     };
-    const formatCurrency = (amount) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(amount || 0);
+    const formatCurrency = (amount) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(amount ?? 0);
     const formatDate = (timestamp) => {
         if (!timestamp) return 'N/A';
         try {
@@ -278,11 +302,12 @@ const OrderListPage = () => {
         const printWindow = window.open('', '_blank', 'height=800,width=800'); if (!printWindow) { alert("Please allow popups."); return; }
         const orderDateFormatted = formatDate(detailModalOrder?.orderDate);
         const deliveryDateFormatted = formatDate(detailModalOrder?.deliveryDate);
-        const printStyles = ` @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap'); body { font-family: 'Inter', sans-serif; margin: 20px; line-height: 1.5; color: #333; background-color: #fff; font-size: 10pt; } h2, h3, h4, h5 { margin: 0 0 0.5em 0; padding: 0; line-height: 1.3; color: #393E41; } p { margin: 0 0 0.3em 0; } table { width: 100%; border-collapse: collapse; margin-bottom: 1em; } th, td { border-bottom: 1px solid #eee; padding: 0.4em 0.5em; text-align: left; vertical-align: top; } th { background-color: #f8f9fa; font-weight: 600; font-size: 0.9em; text-transform: uppercase; color: #6C757D; } td:last-child, th:last-child { text-align: right; } strong { font-weight: 600; } .invoice-header { text-align: center; margin-bottom: 1.5em; border-bottom: 2px solid #eee; padding-bottom: 1em; } .invoice-header h2 { font-size: 1.8em; font-weight: 700; color: #44BBA4; margin-bottom: 0.1em; } .invoice-header p { font-size: 0.85em; color: #555; } .details-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5em; margin-bottom: 1.5em; padding-bottom: 1em; border-bottom: 1px dashed #ccc; } .details-grid h5 { font-size: 1em; font-weight: 600; color: #44BBA4; margin-bottom: 0.5em; border-bottom: 1px solid #eee; padding-bottom: 0.3em; } .details-grid p { font-size: 0.9em; color: #555; } .items-section h3 { font-size: 1.1em; font-weight: 600; margin-bottom: 0.5em; } .item-notes { font-size: 0.8em; color: #666; font-style: italic; padding-left: 1em; margin-top: 0.2em;} .totals-section { display: flex; justify-content: flex-end; margin-top: 1.5em; padding-top: 1em; border-top: 2px solid #eee; } .totals-box { width: 100%; max-width: 280px; font-size: 0.9em; } .totals-box div { display: flex; justify-content: space-between; margin-bottom: 0.3em; } .totals-box span:first-child { color: #555; padding-right: 1em; } .totals-box span:last-child { font-weight: 600; color: #333; min-width: 80px; text-align: right; font-family: monospace;} .totals-box .grand-total span { font-weight: 700; font-size: 1.1em; color: #393E41;} .totals-box .due span:last-child { color: #D97706; } .footer { margin-top: 2em; text-align: center; font-size: 0.8em; color: #888; border-top: 1px dashed #ccc; padding-top: 0.8em; } .no-print, .no-print-invoice { display: none !important; } `;
+        // Condensed print styles
+        const printStyles = `@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap'); body{font-family:'Inter',sans-serif;margin:20px;line-height:1.5;color:#333;font-size:10pt} h2,h3,h4,h5{margin:0 0 .5em 0;padding:0;line-height:1.3;color:#393E41} p{margin:0 0 .3em 0} table{width:100%;border-collapse:collapse;margin-bottom:1em} th,td{border-bottom:1px solid #eee;padding:.4em .5em;text-align:left;vertical-align:top} th{background-color:#f8f9fa;font-weight:600;font-size:.9em;text-transform:uppercase;color:#6C757D} td:last-child,th:last-child{text-align:right} strong{font-weight:600} .invoice-header{text-align:center;margin-bottom:1.5em;border-bottom:2px solid #eee;padding-bottom:1em} .invoice-header h2{font-size:1.8em;font-weight:700;color:#44BBA4;margin-bottom:.1em} .invoice-header p{font-size:.85em;color:#555} .details-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.5em;margin-bottom:1.5em;padding-bottom:1em;border-bottom:1px dashed #ccc} .details-grid h5{font-size:1em;font-weight:600;color:#44BBA4;margin-bottom:.5em;border-bottom:1px solid #eee;padding-bottom:.3em} .details-grid p{font-size:.9em;color:#555} .items-section h3{font-size:1.1em;font-weight:600;margin-bottom:.5em} .item-notes{font-size:.8em;color:#666;font-style:italic;padding-left:1em;margin-top:.2em} .totals-section{display:flex;justify-content:flex-end;margin-top:1.5em;padding-top:1em;border-top:2px solid #eee} .totals-box{width:100%;max-width:280px;font-size:.9em} .totals-box div{display:flex;justify-content:space-between;margin-bottom:.3em} .totals-box span:first-child{color:#555;padding-right:1em} .totals-box span:last-child{font-weight:600;color:#333;min-width:80px;text-align:right;font-family:monospace} .totals-box .grand-total span{font-weight:700;font-size:1.1em;color:#393E41} .totals-box .due span:last-child{color:#D97706} .footer{margin-top:2em;text-align:center;font-size:.8em;color:#888;border-top:1px dashed #ccc;padding-top:.8em} .no-print,.no-print-invoice{display:none!important}`;
         const orderData = detailModalOrder;
         const validPeopleForPrint = orderData.people?.filter(p => p.name && p.items?.some(i => i.name)) || [];
         const additionalFees = orderData.payment?.additionalFees || [];
-        const invoiceHTML = ` <div class="invoice-header"> <h2>THERON Tailors</h2> <p>Order Slip / Invoice</p> <p>Order ID: <strong>${orderData.billNumber || 'N/A'}</strong></p> </div> <div class="details-grid"> <div> <h5>Customer Details:</h5> <p>Name: ${orderData.customer?.name || 'N/A'}</p> <p>Phone: ${orderData.customer?.number || 'N/A'}</p> </div> <div> <h5>Order Dates:</h5> <p>Order Date: ${orderDateFormatted}</p> <p>Delivery Date: ${deliveryDateFormatted}</p> </div> </div> <div class="items-section"> <h3>Order Items</h3> <table> <thead><tr><th>#</th><th>Person</th><th>Item</th><th>Price</th></tr></thead> <tbody> ${validPeopleForPrint.flatMap((person, pIdx) => person.items.map((item, iIdx) => ` <tr> <td>${pIdx * (person.items?.length || 0) + iIdx + 1}</td> <td>${person.name || `Person ${pIdx + 1}`}</td> <td> ${item.name || 'N/A'} ${item.notes ? `<div class="item-notes">Notes: ${item.notes}</div>` : ''} </td> <td>${formatCurrency(item.price)}</td> </tr> `) ).join('')} </tbody> </table> </div> <div class="totals-section"> <div class="totals-box"> <div><span>Subtotal:</span> <span>${formatCurrency(orderData.payment?.subtotal)}</span></div> ${additionalFees.map(fee => `<div><span>${fee.description || 'Additional Fee'}:</span> <span>${formatCurrency(fee.amount)}</span></div>`).join('')} ${orderData.payment?.calculatedDiscount > 0 ? `<div><span>Discount (${orderData.payment?.discountType === 'percent' ? `${orderData.payment?.discountValue}%` : 'Fixed'}):</span> <span>-${formatCurrency(orderData.payment?.calculatedDiscount)}</span></div>` : ''} <div class="grand-total" style="border-top: 1px solid #ccc; padding-top: 0.3em; margin-top: 0.3em;"><span>Grand Total:</span> <span>${formatCurrency(orderData.payment?.total)}</span></div> <div><span>Advance Paid (${orderData.payment?.method || 'N/A'}):</span> <span>${formatCurrency(orderData.payment?.advance)}</span></div> <div class="due"><span>Amount Due:</span> <span>${formatCurrency(orderData.payment?.pending)}</span></div> </div> </div> ${orderData.notes ? `<div style="margin-top: 1.5em; border-top: 1px dashed #ccc; padding-top: 1em;"><h5 style="font-size: 1em; margin-bottom: 0.3em;">Order Notes:</h5><p style="font-size: 0.85em; white-space: pre-wrap;">${orderData.notes}</p></div>` : ''} <div class="footer">Thank you!</div> `;
+        const invoiceHTML = `<div class="invoice-header"><h2>THERON Tailors</h2><p>Order Slip / Invoice</p><p>Order ID: <strong>${orderData.billNumber || 'N/A'}</strong></p></div><div class="details-grid"><div><h5>Customer Details:</h5><p>Name: ${orderData.customer?.name || 'N/A'}</p><p>Phone: ${orderData.customer?.number || 'N/A'}</p></div><div><h5>Order Dates:</h5><p>Order Date: ${orderDateFormatted}</p><p>Delivery Date: ${deliveryDateFormatted}</p></div></div><div class="items-section"><h3>Order Items</h3><table><thead><tr><th>#</th><th>Person</th><th>Item</th><th>Price</th></tr></thead><tbody>${validPeopleForPrint.flatMap((person, pIdx) => person.items.map((item, iIdx) => `<tr><td>${pIdx * (person.items?.length || 0) + iIdx + 1}</td><td>${person.name || `Person ${pIdx + 1}`}</td><td> ${item.name || 'N/A'} ${item.notes ? `<div class="item-notes">Notes: ${item.notes}</div>` : ''} </td><td>${formatCurrency(item.price)}</td></tr>`)).join('')}</tbody></table></div><div class="totals-section"><div class="totals-box"><div><span>Subtotal:</span> <span>${formatCurrency(orderData.payment?.subtotal)}</span></div> ${additionalFees.map(fee => `<div><span>${fee.description || 'Additional Fee'}:</span> <span>${formatCurrency(fee.amount)}</span></div>`).join('')} ${orderData.payment?.calculatedDiscount > 0 ? `<div><span>Discount (${orderData.payment?.discountType === 'percent' ? `${orderData.payment?.discountValue}%` : 'Fixed'}):</span> <span>-${formatCurrency(orderData.payment?.calculatedDiscount)}</span></div>` : ''} <div class="grand-total" style="border-top: 1px solid #ccc; padding-top: 0.3em; margin-top: 0.3em;"><span>Grand Total:</span> <span>${formatCurrency(orderData.payment?.total)}</span></div><div><span>Advance Paid (${orderData.payment?.method || 'N/A'}):</span> <span>${formatCurrency(orderData.payment?.advance)}</span></div><div class="due"><span>Amount Due:</span> <span>${formatCurrency(orderData.payment?.pending)}</span></div></div></div> ${orderData.notes ? `<div style="margin-top: 1.5em; border-top: 1px dashed #ccc; padding-top: 1em;"><h5 style="font-size: 1em; margin-bottom: 0.3em;">Order Notes:</h5><p style="font-size: 0.85em; white-space: pre-wrap;">${orderData.notes}</p></div>` : ''} <div class="footer">Thank you!</div>`;
         printWindow.document.write(`<html><head><title>Invoice: ${orderData.billNumber || 'Order'}</title><style>${printStyles}</style></head><body>${invoiceHTML}</body></html>`);
         printWindow.document.close(); printWindow.focus();
         setTimeout(() => { printWindow.print(); printWindow.close(); }, 300);
@@ -290,7 +315,7 @@ const OrderListPage = () => {
 
     // Print Measurements Handler
     const handlePrintMeasurements = (personName, item) => {
-        if (!item || !item.measurements || typeof item.measurements !== 'object') { alert('No measurements available.'); return; } const measurementEntries = Object.entries(item.measurements).filter(([, value]) => value); if (measurementEntries.length === 0) { alert('No measurements recorded.'); return; } const printWindow = window.open('', '_blank', 'height=500,width=400'); if (!printWindow) { alert("Please allow popups."); return; } const measurementStyles = ` body { font-family: monospace; margin: 5px; font-size: 12px; line-height: 1.4; max-width: 280px; word-wrap: break-word; } h3 { font-size: 14px; font-weight: bold; margin: 10px 0 5px 0; text-transform: uppercase; border-top: 1px dashed #000; padding-top: 5px;} p { font-size: 11px; margin: 0 0 8px 0; } strong { font-weight: bold; } ul { list-style: none; padding: 0; margin: 0 0 10px 0; } li { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 2px; border-bottom: 1px dotted #ccc; padding-bottom: 2px; } li span:first-child { padding-right: 10px; flex-shrink: 0; } li span:last-child { font-weight: bold; text-align: right; } .header-info { margin-bottom: 10px; } .divider { border-top: 1px dashed #000; margin: 8px 0; } `; const measurementHTML = ` <h3>${item.name || 'Item'} Measurements</h3> <div class="header-info"> <p><strong>Order:</strong> ${detailModalOrder?.billNumber || 'N/A'}</p> <p><strong>Cust:</strong> ${detailModalOrder?.customer?.name || 'N/A'}</p> <p><strong>Person:</strong> ${personName || 'N/A'}</p> </div> <div class="divider"></div> <ul> ${measurementEntries.map(([key, value]) => `<li><span>${key}:</span> <span>${value}</span></li>`).join('')} </ul> `; printWindow.document.write(`<html><head><title>Meas: ${item.name}</title><style>${measurementStyles}</style></head><body>${measurementHTML}</body></html>`); printWindow.document.close(); printWindow.focus(); setTimeout(() => { printWindow.print(); printWindow.close(); }, 250);
+        if (!item || !item.measurements || typeof item.measurements !== 'object') { alert('No measurements available.'); return; } const measurementEntries = Object.entries(item.measurements).filter(([, value]) => value && String(value).trim()); if (measurementEntries.length === 0) { alert('No measurements recorded.'); return; } const printWindow = window.open('', '_blank', 'height=500,width=400'); if (!printWindow) { alert("Please allow popups."); return; } const measurementStyles = `body{font-family:monospace;margin:5px;font-size:12px;line-height:1.4;max-width:280px;word-wrap:break-word} h3{font-size:14px;font-weight:bold;margin:10px 0 5px 0;text-transform:uppercase;border-top:1px dashed #000;padding-top:5px} p{font-size:11px;margin:0 0 8px 0} strong{font-weight:bold} ul{list-style:none;padding:0;margin:0 0 10px 0} li{display:flex;justify-content:space-between;font-size:13px;margin-bottom:2px;border-bottom:1px dotted #ccc;padding-bottom:2px} li span:first-child{padding-right:10px;flex-shrink:0} li span:last-child{font-weight:bold;text-align:right} .header-info{margin-bottom:10px} .divider{border-top:1px dashed #000;margin:8px 0}`; const measurementHTML = `<h3>${item.name || 'Item'} Measurements</h3><div class="header-info"><p><strong>Order:</strong> ${detailModalOrder?.billNumber || 'N/A'}</p><p><strong>Cust:</strong> ${detailModalOrder?.customer?.name || 'N/A'}</p><p><strong>Person:</strong> ${personName || 'N/A'}</p></div><div class="divider"></div><ul> ${measurementEntries.map(([key, value]) => `<li><span>${key}:</span> <span>${value}</span></li>`).join('')} </ul>`; printWindow.document.write(`<html><head><title>Meas: ${item.name}</title><style>${measurementStyles}</style></head><body>${measurementHTML}</body></html>`); printWindow.document.close(); printWindow.focus(); setTimeout(() => { printWindow.print(); printWindow.close(); }, 250);
     };
 
 
@@ -504,7 +529,15 @@ const OrderListPage = () => {
                                             </div>
                                             {/* Notify Button */}
                                             <div className="mt-3 text-right no-print no-print-invoice">
-                                                <Button variant="secondary" onClick={() => handleNotify(detailModalOrder.customer, item)} disabled={!detailModalOrder.customer?.number} className="px-2.5 py-1 text-xs flex items-center gap-1"> <FiSend/> Notify </Button>
+                                                <Button
+                                                    variant="secondary"
+                                                    onClick={() => handleNotify(detailModalOrder.customer, item, detailModalOrder.billNumber)}
+                                                    disabled={!detailModalOrder.customer?.number} // Disable if no number
+                                                    className="px-2.5 py-1 text-xs flex items-center gap-1"
+                                                    title={!detailModalOrder.customer?.number ? "Customer number missing" : `Send status update via WhatsApp`}
+                                                >
+                                                     <FiMessageSquare size={14}/> Notify {/* Changed Icon */}
+                                                </Button>
                                             </div>
                                         </div>
                                     ))}
