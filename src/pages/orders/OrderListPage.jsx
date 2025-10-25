@@ -121,6 +121,9 @@ const OrderListPage = () => {
                 sewers.push({ value: w.name, label: w.name });
             }
         });
+        // Sort alphabetically by label (worker name)
+        cutters.sort((a, b) => a.label.localeCompare(b.label));
+        sewers.sort((a, b) => a.label.localeCompare(b.label));
         return { cutters, sewers };
     }, [workers]);
 
@@ -165,11 +168,20 @@ const OrderListPage = () => {
             const orderIdToOpen = location.state.openOrderDetailsId;
             const orderToOpen = orders.find(order => order.id === orderIdToOpen);
             if (orderToOpen) {
-                setDetailModalOrder(JSON.parse(JSON.stringify(orderToOpen)));
+                // Ensure measurements object exists for all items before setting state
+                const orderWithEnsuredMeasurements = JSON.parse(JSON.stringify(orderToOpen)); // Deep copy
+                orderWithEnsuredMeasurements.people?.forEach(person => {
+                    person.items?.forEach(item => {
+                        if (!item.measurements || typeof item.measurements !== 'object') {
+                            item.measurements = {}; // Initialize if missing or not an object
+                        }
+                    });
+                });
+                setDetailModalOrder(orderWithEnsuredMeasurements);
             } else {
                 console.warn(`Order with ID ${orderIdToOpen} not found.`);
             }
-            navigate(location.pathname, { replace: true, state: {} });
+            navigate(location.pathname, { replace: true, state: {} }); // Clear state
         }
     }, [location.state, orders, ordersLoading, navigate, location.pathname]);
 
@@ -191,14 +203,17 @@ const OrderListPage = () => {
         try {
             const itemToUpdate = orderToUpdate.people?.[personIndex]?.items?.[itemIndex];
             if (itemToUpdate) {
-                if(itemToUpdate.status === newStatus) return;
+                if(itemToUpdate.status === newStatus) return; // No change needed
                 itemToUpdate.status = newStatus;
-                setDetailModalOrder(orderToUpdate);
+                setDetailModalOrder(orderToUpdate); // Optimistic UI update
                 await updateDoc(doc(db, getCollectionPath('orders'), detailModalOrder.id), {
-                    people: orderToUpdate.people
+                    people: orderToUpdate.people // Update only the 'people' array in Firestore
                 });
+                console.log("Firestore status updated successfully!");
+                // Optionally trigger notification after successful update
+                // handleNotify(orderToUpdate.customer, itemToUpdate, orderToUpdate.billNumber);
             } else { throw new Error("Invalid item path for status update"); }
-        } catch (error) { console.error("Error updating status:", error); alert("Failed to update status."); setDetailModalOrder(originalOrderState); }
+        } catch (error) { console.error("Error updating status:", error); alert("Failed to update status."); setDetailModalOrder(originalOrderState); } // Revert UI on error
     };
 
     // Worker Assign Handler
@@ -209,41 +224,48 @@ const OrderListPage = () => {
         try {
             const itemToUpdate = orderToUpdate.people?.[personIndex]?.items?.[itemIndex];
             if (itemToUpdate) {
-                if (itemToUpdate[workerType] === workerName) return;
-                itemToUpdate[workerType] = workerName;
-                setDetailModalOrder(orderToUpdate);
-                await updateDoc(doc(db, getCollectionPath('orders'), detailModalOrder.id), { people: orderToUpdate.people });
+                if (itemToUpdate[workerType] === workerName) return; // No change needed
+                itemToUpdate[workerType] = workerName; // Assign the worker name
+                setDetailModalOrder(orderToUpdate); // Optimistic UI update
+                await updateDoc(doc(db, getCollectionPath('orders'), detailModalOrder.id), { people: orderToUpdate.people }); // Update only 'people'
+                console.log(`Worker ${workerType} assigned successfully.`);
             } else { throw new Error("Invalid item path for worker assignment"); }
-        } catch (error) { console.error(`Error assigning ${workerType}:`, error); alert(`Failed to assign ${workerType}.`); setDetailModalOrder(originalOrderState); }
+        } catch (error) { console.error(`Error assigning ${workerType}:`, error); alert(`Failed to assign ${workerType}.`); setDetailModalOrder(originalOrderState); } // Revert UI on error
     };
 
     // Notify Handler - Opens WhatsApp
     const handleNotify = (customer, item, orderBillNumber) => {
-        // 1. Validate Phone Number
         if (!customer?.number) {
             alert("Customer phone number not available.");
             return;
         }
-        // 2. Basic phone number cleanup (remove spaces, hyphens)
         let phoneNumber = customer.number.replace(/[\s\-]+/g, '');
-        // 3. Prepend country code if necessary (Example for India) - ADJUST AS NEEDED
+        // Basic India country code logic (adjust if needed)
         if (phoneNumber.length === 10 && !phoneNumber.startsWith('91')) {
             phoneNumber = `91${phoneNumber}`;
         }
-         phoneNumber = phoneNumber.replace(/^\+|^00/, ''); // Ensure no leading +/00
+        phoneNumber = phoneNumber.replace(/^\+|^00/, ''); // Remove leading +/00
 
-        // 4. Construct the Message
         const customerName = customer.name ? `, ${customer.name}` : '';
         const itemName = item.name || 'Your item';
         const itemStatus = item.status || 'updated';
         const orderId = orderBillNumber || 'N/A';
-        const message = `Namaste${customerName},\nUpdate from Theron Tailors for Order ${orderId}:\n'${itemName}' is now '${itemStatus}'.\n\nThank you!`;
 
-        // 5. Encode and Construct URL
+        // Enhanced messages
+        let statusMessage = '';
+        switch(itemStatus) {
+            case 'Cutting': statusMessage = `✨ Good news! '${itemName}' is now being cut.`; break;
+            case 'Sewing': statusMessage = `🧵 Progress update! '${itemName}' has moved to sewing.`; break;
+            case 'Ready for Trial': statusMessage = `🎉 Almost there! '${itemName}' is ready for trial. Please let us know when you'd like to come in.`; break;
+            case 'Delivered': statusMessage = `✅ Your item '${itemName}' has been marked as delivered. We hope you enjoy it!`; break;
+            case 'Received': statusMessage = `👍 Order received! We've started processing '${itemName}'.`; break;
+            default: statusMessage = `'${itemName}' status is now '${itemStatus}'.`;
+        }
+        const message = `Namaste${customerName},\nUpdate from Theron Tailors (Order ${orderId}):\n${statusMessage}\n\nThank you!`;
+
         const encodedMessage = encodeURIComponent(message);
         const whatsappUrl = `https://wa.me/${phoneNumber}?text=${encodedMessage}`;
 
-        // 6. Open WhatsApp Link
         console.log("Attempting to open WhatsApp URL:", whatsappUrl);
         window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
     };
@@ -274,23 +296,29 @@ const OrderListPage = () => {
     };
 
     // --- HELPER FUNCTIONS ---
-    const getOrderField = (obj, keys) => {
+    // Safely get potentially nested property
+    const getOrderField = (obj, keys = []) => {
       for (const key of keys) {
+        // Handle nested keys like 'payment.total'
         const value = key.split('.').reduce((acc, k) => acc?.[k], obj);
-        if (value) return value;
+        if (value !== undefined && value !== null) return value;
       }
-      return null;
+      return null; // Return null if no key provides a value
     };
-    const formatCurrency = (amount) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(amount ?? 0);
+    // Format currency
+    const formatCurrency = (amount) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(amount ?? 0); // Use nullish coalescing
+    // Format Firestore Timestamp or Date object to DD/MM/YYYY
     const formatDate = (timestamp) => {
         if (!timestamp) return 'N/A';
         try {
             let dateObj = null;
-            if (typeof timestamp.toDate === 'function') { dateObj = timestamp.toDate(); }
-            else if (timestamp.seconds) { dateObj = new Date(timestamp.seconds * 1000); }
-            else if (timestamp._seconds) { dateObj = new Date(timestamp._seconds * 1000); }
-            else if (typeof timestamp === 'string') { const parsed = new Date(timestamp.replace(/-/g, '/')); if (!isNaN(parsed)) dateObj = parsed; }
-            else if (timestamp instanceof Date) { dateObj = timestamp; }
+            if (typeof timestamp.toDate === 'function') { dateObj = timestamp.toDate(); } // Firestore Timestamp
+            else if (timestamp.seconds) { dateObj = new Date(timestamp.seconds * 1000); } // Handle potential plain object timestamp
+            else if (timestamp instanceof Date && !isNaN(timestamp)) { dateObj = timestamp; } // Already a Date object
+            else if (typeof timestamp === 'string') { // Handle ISO string or similar
+                const parsed = new Date(timestamp.replace(/-/g, '/')); // Help parsing non-standard formats
+                if (!isNaN(parsed)) dateObj = parsed;
+            }
             if (!dateObj || isNaN(dateObj)) return 'N/A';
             return dateObj.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
         } catch (error) { console.error('Date formatting failed:', error, timestamp); return 'N/A'; }
@@ -298,24 +326,44 @@ const OrderListPage = () => {
 
     // --- PRINT INVOICE HANDLER ---
     const handlePrintInvoice = () => {
-        const invoiceContentElement = document.getElementById('printable-invoice'); if (!invoiceContentElement) return;
-        const printWindow = window.open('', '_blank', 'height=800,width=800'); if (!printWindow) { alert("Please allow popups."); return; }
-        const orderDateFormatted = formatDate(detailModalOrder?.orderDate);
-        const deliveryDateFormatted = formatDate(detailModalOrder?.deliveryDate);
-        // Condensed print styles
-        const printStyles = `@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap'); body{font-family:'Inter',sans-serif;margin:20px;line-height:1.5;color:#333;font-size:10pt} h2,h3,h4,h5{margin:0 0 .5em 0;padding:0;line-height:1.3;color:#393E41} p{margin:0 0 .3em 0} table{width:100%;border-collapse:collapse;margin-bottom:1em} th,td{border-bottom:1px solid #eee;padding:.4em .5em;text-align:left;vertical-align:top} th{background-color:#f8f9fa;font-weight:600;font-size:.9em;text-transform:uppercase;color:#6C757D} td:last-child,th:last-child{text-align:right} strong{font-weight:600} .invoice-header{text-align:center;margin-bottom:1.5em;border-bottom:2px solid #eee;padding-bottom:1em} .invoice-header h2{font-size:1.8em;font-weight:700;color:#44BBA4;margin-bottom:.1em} .invoice-header p{font-size:.85em;color:#555} .details-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.5em;margin-bottom:1.5em;padding-bottom:1em;border-bottom:1px dashed #ccc} .details-grid h5{font-size:1em;font-weight:600;color:#44BBA4;margin-bottom:.5em;border-bottom:1px solid #eee;padding-bottom:.3em} .details-grid p{font-size:.9em;color:#555} .items-section h3{font-size:1.1em;font-weight:600;margin-bottom:.5em} .item-notes{font-size:.8em;color:#666;font-style:italic;padding-left:1em;margin-top:.2em} .totals-section{display:flex;justify-content:flex-end;margin-top:1.5em;padding-top:1em;border-top:2px solid #eee} .totals-box{width:100%;max-width:280px;font-size:.9em} .totals-box div{display:flex;justify-content:space-between;margin-bottom:.3em} .totals-box span:first-child{color:#555;padding-right:1em} .totals-box span:last-child{font-weight:600;color:#333;min-width:80px;text-align:right;font-family:monospace} .totals-box .grand-total span{font-weight:700;font-size:1.1em;color:#393E41} .totals-box .due span:last-child{color:#D97706} .footer{margin-top:2em;text-align:center;font-size:.8em;color:#888;border-top:1px dashed #ccc;padding-top:.8em} .no-print,.no-print-invoice{display:none!important}`;
+        if (!detailModalOrder) return;
+        const invoiceContentElement = document.getElementById('printable-invoice');
+        if (!invoiceContentElement) return;
+        const printWindow = window.open('', '_blank', 'height=800,width=800');
+        if (!printWindow) { alert("Please allow popups for printing."); return; }
+
+        const orderDateFormatted = formatDate(detailModalOrder.orderDate);
+        const deliveryDateFormatted = formatDate(detailModalOrder.deliveryDate);
+        // Print-specific CSS (condensed)
+        const printStyles = `@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');body{font-family:'Inter',sans-serif;margin:20px;line-height:1.5;color:#333;font-size:10pt}h2,h3,h4,h5{margin:0 0 .5em 0;padding:0;line-height:1.3;color:#393E41}p{margin:0 0 .3em 0}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border-bottom:1px solid #eee;padding:.4em .5em;text-align:left;vertical-align:top}th{background-color:#f8f9fa;font-weight:600;font-size:.9em;text-transform:uppercase;color:#6C757D}td:last-child,th:last-child{text-align:right}strong{font-weight:600}.invoice-header{text-align:center;margin-bottom:1.5em;border-bottom:2px solid #eee;padding-bottom:1em}.invoice-header h2{font-size:1.8em;font-weight:700;color:#44BBA4;margin-bottom:.1em}.invoice-header p{font-size:.85em;color:#555}.details-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.5em;margin-bottom:1.5em;padding-bottom:1em;border-bottom:1px dashed #ccc}.details-grid h5{font-size:1em;font-weight:600;color:#44BBA4;margin-bottom:.5em;border-bottom:1px solid #eee;padding-bottom:.3em}.details-grid p{font-size:.9em;color:#555}.items-section h3{font-size:1.1em;font-weight:600;margin-bottom:.5em}.item-notes{font-size:.8em;color:#666;font-style:italic;padding-left:1em;margin-top:.2em}.totals-section{display:flex;justify-content:flex-end;margin-top:1.5em;padding-top:1em;border-top:2px solid #eee}.totals-box{width:100%;max-width:280px;font-size:.9em}.totals-box div{display:flex;justify-content:space-between;margin-bottom:.3em}.totals-box span:first-child{color:#555;padding-right:1em}.totals-box span:last-child{font-weight:600;color:#333;min-width:80px;text-align:right;font-family:monospace}.totals-box .grand-total span{font-weight:700;font-size:1.1em;color:#393E41}.totals-box .due span:last-child{color:#D97706}.footer{margin-top:2em;text-align:center;font-size:.8em;color:#888;border-top:1px dashed #ccc;padding-top:.8em}.no-print,.no-print-invoice,.measurement-section-for-print{display:none!important}`;
         const orderData = detailModalOrder;
         const validPeopleForPrint = orderData.people?.filter(p => p.name && p.items?.some(i => i.name)) || [];
         const additionalFees = orderData.payment?.additionalFees || [];
+        // Generate Invoice HTML
         const invoiceHTML = `<div class="invoice-header"><h2>THERON Tailors</h2><p>Order Slip / Invoice</p><p>Order ID: <strong>${orderData.billNumber || 'N/A'}</strong></p></div><div class="details-grid"><div><h5>Customer Details:</h5><p>Name: ${orderData.customer?.name || 'N/A'}</p><p>Phone: ${orderData.customer?.number || 'N/A'}</p></div><div><h5>Order Dates:</h5><p>Order Date: ${orderDateFormatted}</p><p>Delivery Date: ${deliveryDateFormatted}</p></div></div><div class="items-section"><h3>Order Items</h3><table><thead><tr><th>#</th><th>Person</th><th>Item</th><th>Price</th></tr></thead><tbody>${validPeopleForPrint.flatMap((person, pIdx) => person.items.map((item, iIdx) => `<tr><td>${pIdx * (person.items?.length || 0) + iIdx + 1}</td><td>${person.name || `Person ${pIdx + 1}`}</td><td> ${item.name || 'N/A'} ${item.notes ? `<div class="item-notes">Notes: ${item.notes}</div>` : ''} </td><td>${formatCurrency(item.price)}</td></tr>`)).join('')}</tbody></table></div><div class="totals-section"><div class="totals-box"><div><span>Subtotal:</span> <span>${formatCurrency(orderData.payment?.subtotal)}</span></div> ${additionalFees.map(fee => `<div><span>${fee.description || 'Additional Fee'}:</span> <span>${formatCurrency(fee.amount)}</span></div>`).join('')} ${orderData.payment?.calculatedDiscount > 0 ? `<div><span>Discount (${orderData.payment?.discountType === 'percent' ? `${orderData.payment?.discountValue}%` : 'Fixed'}):</span> <span>-${formatCurrency(orderData.payment?.calculatedDiscount)}</span></div>` : ''} <div class="grand-total" style="border-top: 1px solid #ccc; padding-top: 0.3em; margin-top: 0.3em;"><span>Grand Total:</span> <span>${formatCurrency(orderData.payment?.total)}</span></div><div><span>Advance Paid (${orderData.payment?.method || 'N/A'}):</span> <span>${formatCurrency(orderData.payment?.advance)}</span></div><div class="due"><span>Amount Due:</span> <span>${formatCurrency(orderData.payment?.pending)}</span></div></div></div> ${orderData.notes ? `<div style="margin-top: 1.5em; border-top: 1px dashed #ccc; padding-top: 1em;"><h5 style="font-size: 1em; margin-bottom: 0.3em;">Order Notes:</h5><p style="font-size: 0.85em; white-space: pre-wrap;">${orderData.notes}</p></div>` : ''} <div class="footer">Thank you!</div>`;
+
         printWindow.document.write(`<html><head><title>Invoice: ${orderData.billNumber || 'Order'}</title><style>${printStyles}</style></head><body>${invoiceHTML}</body></html>`);
-        printWindow.document.close(); printWindow.focus();
+        printWindow.document.close();
+        printWindow.focus();
+        // Delay print slightly to ensure styles apply
         setTimeout(() => { printWindow.print(); printWindow.close(); }, 300);
     };
 
     // Print Measurements Handler
     const handlePrintMeasurements = (personName, item) => {
-        if (!item || !item.measurements || typeof item.measurements !== 'object') { alert('No measurements available.'); return; } const measurementEntries = Object.entries(item.measurements).filter(([, value]) => value && String(value).trim()); if (measurementEntries.length === 0) { alert('No measurements recorded.'); return; } const printWindow = window.open('', '_blank', 'height=500,width=400'); if (!printWindow) { alert("Please allow popups."); return; } const measurementStyles = `body{font-family:monospace;margin:5px;font-size:12px;line-height:1.4;max-width:280px;word-wrap:break-word} h3{font-size:14px;font-weight:bold;margin:10px 0 5px 0;text-transform:uppercase;border-top:1px dashed #000;padding-top:5px} p{font-size:11px;margin:0 0 8px 0} strong{font-weight:bold} ul{list-style:none;padding:0;margin:0 0 10px 0} li{display:flex;justify-content:space-between;font-size:13px;margin-bottom:2px;border-bottom:1px dotted #ccc;padding-bottom:2px} li span:first-child{padding-right:10px;flex-shrink:0} li span:last-child{font-weight:bold;text-align:right} .header-info{margin-bottom:10px} .divider{border-top:1px dashed #000;margin:8px 0}`; const measurementHTML = `<h3>${item.name || 'Item'} Measurements</h3><div class="header-info"><p><strong>Order:</strong> ${detailModalOrder?.billNumber || 'N/A'}</p><p><strong>Cust:</strong> ${detailModalOrder?.customer?.name || 'N/A'}</p><p><strong>Person:</strong> ${personName || 'N/A'}</p></div><div class="divider"></div><ul> ${measurementEntries.map(([key, value]) => `<li><span>${key}:</span> <span>${value}</span></li>`).join('')} </ul>`; printWindow.document.write(`<html><head><title>Meas: ${item.name}</title><style>${measurementStyles}</style></head><body>${measurementHTML}</body></html>`); printWindow.document.close(); printWindow.focus(); setTimeout(() => { printWindow.print(); printWindow.close(); }, 250);
+        if (!item || !item.measurements || typeof item.measurements !== 'object') { alert('No measurements available.'); return; }
+        const measurementEntries = Object.entries(item.measurements).filter(([, value]) => value && String(value).trim());
+        if (measurementEntries.length === 0) { alert('No measurements recorded.'); return; }
+        const printWindow = window.open('', '_blank', 'height=600,width=400'); // Slightly larger height
+        if (!printWindow) { alert("Please allow popups for printing."); return; }
+        // Simple, clean styles for measurements
+        const measurementStyles = `body{font-family:monospace;margin:10px;font-size:12px;line-height:1.6} h3{font-size:14px;font-weight:bold;margin:15px 0 8px 0;text-transform:uppercase;border-top:1px dashed #333;padding-top:8px} p{font-size:11px;margin:0 0 8px 0} strong{font-weight:bold} ul{list-style:none;padding:0;margin:0 0 10px 0} li{display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;border-bottom:1px dotted #ccc;padding-bottom:4px} li span:first-child{padding-right:15px;flex-shrink:0;color:#555} li span:last-child{font-weight:bold;text-align:right} .header-info{margin-bottom:12px;border-bottom:1px dashed #333;padding-bottom:8px}`;
+        const measurementHTML = `<h3>${item.name || 'Item'} Measurements</h3><div class="header-info"><p><strong>Order:</strong> ${detailModalOrder?.billNumber || 'N/A'}</p><p><strong>Customer:</strong> ${detailModalOrder?.customer?.name || 'N/A'}</p><p><strong>Person:</strong> ${personName || 'N/A'}</p></div><ul> ${measurementEntries.map(([key, value]) => `<li><span>${key}:</span> <span>${value}</span></li>`).join('')} </ul>`;
+
+        printWindow.document.write(`<html><head><title>Measurements: ${item.name}</title><style>${measurementStyles}</style></head><body>${measurementHTML}</body></html>`);
+        printWindow.document.close();
+        printWindow.focus();
+        setTimeout(() => { printWindow.print(); printWindow.close(); }, 250);
     };
 
 
@@ -485,7 +533,7 @@ const OrderListPage = () => {
                                                     <>
                                                     <strong className="text-[#393E41] font-medium block mb-1">Measurements:</strong>
                                                     <ul className="list-disc list-inside grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1 measurements-list">
-                                                        {Object.entries(item.measurements).filter(([, value]) => value).map(([key, value]) => ( <li key={key}>{key}: <strong>{value}</strong></li> ))}
+                                                        {Object.entries(item.measurements).filter(([, value]) => value && String(value).trim()).map(([key, value]) => ( <li key={key}>{key}: <strong>{value}</strong></li> ))}
                                                     </ul>
                                                     </>
                                                 ) : null}
@@ -504,7 +552,6 @@ const OrderListPage = () => {
                                                 >
                                                     {ITEM_STATUS_OPTIONS.map(s => <option key={s}>{s}</option>)}
                                                 </Select>
-                                                {/* Assign Cutter Dropdown */}
                                                 <Select
                                                     label={<span className="flex items-center gap-1"><FiScissors size={14}/> Cutter</span>}
                                                     id={`cutter-${pIdx}-${iIdx}`}
@@ -512,10 +559,8 @@ const OrderListPage = () => {
                                                     onChange={e => handleWorkerAssign(pIdx, iIdx, 'cutter', e.target.value)}
                                                 >
                                                     <option value="">Unassigned</option>
-                                                    {/* Map over filtered cutters */}
                                                     {workerOptions.cutters.map(w => <option key={w.value} value={w.value}>{w.label}</option>)}
                                                 </Select>
-                                                {/* Assign Sewer Dropdown */}
                                                 <Select
                                                     label={<span className="flex items-center gap-1"><FiPocket size={14}/> Sewer</span>}
                                                     id={`sewer-${pIdx}-${iIdx}`}
@@ -523,7 +568,6 @@ const OrderListPage = () => {
                                                     onChange={e => handleWorkerAssign(pIdx, iIdx, 'sewer', e.target.value)}
                                                 >
                                                     <option value="">Unassigned</option>
-                                                     {/* Map over filtered sewers */}
                                                     {workerOptions.sewers.map(w => <option key={w.value} value={w.value}>{w.label}</option>)}
                                                 </Select>
                                             </div>
@@ -532,7 +576,7 @@ const OrderListPage = () => {
                                                 <Button
                                                     variant="secondary"
                                                     onClick={() => handleNotify(detailModalOrder.customer, item, detailModalOrder.billNumber)}
-                                                    disabled={!detailModalOrder.customer?.number} // Disable if no number
+                                                    disabled={!detailModalOrder.customer?.number}
                                                     className="px-2.5 py-1 text-xs flex items-center gap-1"
                                                     title={!detailModalOrder.customer?.number ? "Customer number missing" : `Send status update via WhatsApp`}
                                                 >
@@ -574,3 +618,4 @@ const OrderListPage = () => {
 };
 
 export default OrderListPage;
+
