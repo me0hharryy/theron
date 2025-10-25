@@ -4,7 +4,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useData } from '../../context/DataContext';
 import { db, getCollectionPath } from '../../firebase';
 import {
-    collection, query, orderBy, onSnapshot, addDoc, Timestamp, doc, getDoc
+    collection, query, orderBy, onSnapshot, addDoc, Timestamp, doc, writeBatch // Import writeBatch
 } from 'firebase/firestore'; // Import necessary Firestore functions
 
 import Card from '../../components/ui/Card';
@@ -48,8 +48,6 @@ const WorkerDetailPage = () => {
             } else {
                 console.error("Worker not found!");
                 setWorker(null); // Set worker to null if not found
-                // Optionally navigate back or show a "not found" message
-                // navigate('/workers');
             }
             setWorkersLoading(false);
         }, (error) => {
@@ -126,7 +124,6 @@ const WorkerDetailPage = () => {
 
         // Calculate ledger totals using fetched payment history
         const totalEarned = items.reduce((acc, item) => acc + item.pay, 0);
-        // *** Correctly calculate total paid from payment history ***
         const totalPaid = paymentHistory.reduce((acc, payment) => acc + (Number(payment.amount) || 0), 0);
         const pendingAmount = totalEarned - totalPaid;
 
@@ -134,7 +131,7 @@ const WorkerDetailPage = () => {
           assignedItems: items,
           ledger: {
             totalEarned: totalEarned,
-            paid: totalPaid, // Use calculated paid amount
+            paid: totalPaid,
             pending: pendingAmount
           }
         };
@@ -157,6 +154,7 @@ const WorkerDetailPage = () => {
         setNewPayment(prev => ({ ...prev, [name]: value }));
     };
 
+    // --- UPDATED: handleSavePayment ---
     const handleSavePayment = async (e) => {
         e.preventDefault();
         const amount = Number(newPayment.amount);
@@ -164,22 +162,40 @@ const WorkerDetailPage = () => {
             alert("Please enter a valid positive payment amount.");
             return;
         }
-        // Optional: Check if payment exceeds pending amount
-        // if (amount > ledger.pending) {
-        //   if (!window.confirm(`Payment amount (${formatCurrency(amount)}) exceeds pending amount (${formatCurrency(ledger.pending)}). Proceed anyway?`)) {
-        //     return;
-        //   }
-        // }
+        // Optional pending amount check can remain here if desired
+        // if (amount > ledger.pending) { /* ... confirmation logic ... */ }
 
         setIsSavingPayment(true);
         try {
-            const paymentsPath = `${getCollectionPath('workers')}/${workerId}/payments`;
-            await addDoc(collection(db, paymentsPath), {
+            // Use a Firestore batch write to save to both locations atomically
+            const batch = writeBatch(db);
+
+            // 1. Save to worker's payment subcollection
+            const workerPaymentsPath = `${getCollectionPath('workers')}/${workerId}/payments`;
+            const workerPaymentRef = doc(collection(db, workerPaymentsPath)); // Generate ref for subcollection doc
+            batch.set(workerPaymentRef, {
                 amount: amount,
                 date: Timestamp.now(),
                 method: newPayment.method,
                 notes: newPayment.notes.trim() || '',
             });
+
+            // 2. ALSO save to the main transactions collection as an Expense
+            const mainTransactionsPath = getCollectionPath('transactions');
+            const mainTransactionRef = doc(collection(db, mainTransactionsPath)); // Generate ref for main collection doc
+            batch.set(mainTransactionRef, {
+                date: Timestamp.now(),
+                type: 'Expense', // Mark it as an expense
+                description: `Payment to worker: ${worker?.name || workerId}`, // Clear description
+                amount: amount,
+                // Optionally add references for easier tracking
+                workerRef: workerId,
+                workerPaymentRef: workerPaymentRef.id // Link to the specific payment doc in subcollection
+            });
+
+            // Commit the batch write
+            await batch.commit();
+
             handleClosePaymentModal(); // Close modal on success
         } catch (error) {
             console.error("Error saving payment:", error);

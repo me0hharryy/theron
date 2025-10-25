@@ -4,7 +4,7 @@ import { AuthProvider } from './context/AuthContext';
 import { DataProvider } from './context/DataContext';
 import PrivateRoute from './components/auth/PrivateRoute';
 import PublicRoute from './components/auth/PublicRoute';
-
+import AdditionalFeesPage from './pages/fees/AdditionalFeesPage';
 import MainLayout from './components/layout/MainLayout';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
@@ -38,6 +38,7 @@ function App() {
           <Route path="workers/:workerId" element={<WorkerDetailPage />} /> 
           <Route path="ledger" element={<LedgerPage />} />
           <Route path="reports" element={<ReportsPage />} />
+          <Route path="fees" element={<AdditionalFeesPage />} />
         </Route>
       </Routes>
     </AuthProvider>

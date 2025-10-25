@@ -7,8 +7,8 @@ import Button from '../components/ui/Button';
 
 const LoginPage = () => {
   // Demo credentials - CHANGE FOR PRODUCTION or remove defaults
-  const [email, setEmail] = useState('owner@theron.com');
-  const [password, setPassword] = useState('password');
+  const [email, setEmail] = useState('owner@business.com');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -71,7 +71,7 @@ const LoginPage = () => {
         </form>
       </Card>
        {/* Demo login info */}
-       <p className="mt-6 text-sm text-[#6C757D]">Demo: owner@theron.com / password</p>
+       <p className="mt-6 text-sm text-[#6C757D]"></p>
     </div>
   );
 };
