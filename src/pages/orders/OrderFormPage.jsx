@@ -4,7 +4,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useData } from '../../context/DataContext'; // DataContext now includes additionalFees
 import { db, storage, getCollectionPath } from '../../firebase';
 import { doc, getDoc, addDoc, updateDoc, collection, writeBatch, Timestamp } from 'firebase/firestore';
-import { ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
+import { ref, uploadBytesResumable, getDownloadURL, uploadBytes } from "firebase/storage"; // <-- Added uploadBytes
 import PropTypes from 'prop-types';
 
 import Card from '../../components/ui/Card';
@@ -15,6 +15,10 @@ import Spinner from '../../components/ui/Spinner';
 
 // --- Icons ---
 import { FiPlus, FiTrash2, FiUpload, FiTag, FiPlusSquare, FiArrowLeft, FiSave } from 'react-icons/fi';
+
+// --- NEW PDF Imports ---
+import { jsPDF } from 'jspdf';
+import html2canvas from 'html2canvas';
 
 // --- Constants & Templates ---
 const MAX_STEPS = 3;
@@ -70,8 +74,8 @@ const formatDateForDisplay = (dateValue) => {
     return date.toLocaleDateString('en-GB'); // DD/MM/YYYY
 };
 
-// --- New Order Notification Function ---
-const sendNewOrderNotification = (orderData) => {
+// --- New Order Notification Function (Updated) ---
+const sendNewOrderNotification = (orderData, invoiceUrl = null) => {
     const customer = orderData.customer;
     if (!customer?.number) {
         console.warn("Cannot send new order notification: Customer phone number missing.");
@@ -110,13 +114,88 @@ Advance Paid: ${formatCurrency(payment.advance)} (${payment.method || 'N/A'})
 *Pending Amount: ${formatCurrency(payment.pending)}*
 ---------------------`;
 
-    const message = `Namaste${customerName},\nYour order with Theron Tailors (ID: ${orderId}) has been received! 🎉\nPromised Delivery Date: ${deliveryDate}${itemsSummary}\n${invoiceSummary}\n\nWe'll keep you updated on the progress. Thank you!`;
+    // --- NEW: Add the invoice URL to the message if it exists ---
+    const invoiceLink = invoiceUrl 
+        ? `\n\n\u{1F4CE} Download your invoice:\n${invoiceUrl}` // 📎 emoji
+        : '';
+
+    const message = `Namaste${customerName},\nYour order with Theron Tailors (ID: ${orderId}) has been received! \u{1F389}\nPromised Delivery Date: ${deliveryDate}${itemsSummary}\n${invoiceSummary}${invoiceLink}\n\nWe'll keep you updated on the progress. Thank you!`;
 
     const encodedMessage = encodeURIComponent(message);
     const whatsappUrl = `https://wa.me/${phoneNumber}?text=${encodedMessage}`;
 
     console.log("Attempting to open WhatsApp for new order notification:", whatsappUrl);
     window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
+};
+
+
+// --- NEW: PDF Generation and Upload Function (More Robust) ---
+const generateAndUploadInvoicePdf = (orderData) => {
+    // Use a Promise to return the URL
+    return new Promise(async (resolve, reject) => {
+        if (!orderData) {
+            return reject(new Error("No order data provided to generate PDF."));
+        }
+
+        // --- 1. Get HTML and Styles (FIX: Removed @import for reliability) ---
+        const orderDateFormatted = formatDateForDisplay(orderData.orderDate);
+        const deliveryDateFormatted = formatDateForDisplay(orderData.deliveryDate);
+        // Using 'Helvetica' (a built-in PDF font) is much safer than @import
+        const printStyles = `body{font-family:'Helvetica',sans-serif;margin:20px;line-height:1.5;color:#333;font-size:10pt}h2,h3,h4,h5{margin:0 0 .5em 0;padding:0;line-height:1.3;color:#393E41}p{margin:0 0 .3em 0}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border-bottom:1px solid #eee;padding:.4em .5em;text-align:left;vertical-align:top}th{background-color:#f8f9fa;font-weight:600;font-size:.9em;text-transform:uppercase;color:#6C757D}td:last-child,th:last-child{text-align:right}strong{font-weight:600}.invoice-header{text-align:center;margin-bottom:1.5em;border-bottom:2px solid #eee;padding-bottom:1em}.invoice-header h2{font-size:1.8em;font-weight:700;color:#44BBA4;margin-bottom:.1em}.invoice-header p{font-size:.85em;color:#555}.details-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.5em;margin-bottom:1.5em;padding-bottom:1em;border-bottom:1px dashed #ccc}.details-grid h5{font-size:1em;font-weight:600;color:#44BBA4;margin-bottom:.5em;border-bottom:1px solid #eee;padding-bottom:.3em}.details-grid p{font-size:.9em;color:#555}.items-section h3{font-size:1.1em;font-weight:600;margin-bottom:.5em}.item-notes{font-size:.8em;color:#666;font-style:italic;padding-left:1em;margin-top:.2em}.totals-section{display:flex;justify-content:flex-end;margin-top:1.5em;padding-top:1em;border-top:2px solid #eee}.totals-box{width:100%;max-width:280px;font-size:.9em}.totals-box div{display:flex;justify-content:space-between;margin-bottom:.3em}.totals-box span:first-child{color:#555;padding-right:1em}.totals-box span:last-child{font-weight:600;color:#333;min-width:80px;text-align:right;font-family:monospace}.totals-box .grand-total span{font-weight:700;font-size:1.1em;color:#393E41}.totals-box .due span:last-child{color:#D97706}.footer{margin-top:2em;text-align:center;font-size:.8em;color:#888;border-top:1px dashed #ccc;padding-top:.8em}.no-print,.no-print-invoice,.measurement-section-for-print{display:none!important}`;
+        
+        const validPeopleForPrint = orderData.people?.filter(p => p.name && p.items?.some(i => i.name)) || [];
+        const additionalFees = orderData.payment?.additionalFees || [];
+        const paymentHistory = orderData.payment?.paymentHistory || [];
+        const invoiceHTML = `<div class="invoice-header"><h2>THERON Tailors</h2><p>Order Slip / Invoice</p><p>Order ID: <strong>${orderData.billNumber || 'N/A'}</strong></p></div><div class="details-grid"><div><h5>Customer Details:</h5><p>Name: ${orderData.customer?.name || 'N/A'}</p><p>Phone: ${orderData.customer?.number || 'N/A'}</p></div><div><h5>Order Dates:</h5><p>Order Date: ${orderDateFormatted}</p><p>Delivery Date: ${deliveryDateFormatted}</p></div></div><div class="items-section"><h3>Order Items</h3><table><thead><tr><th>#</th><th>Person</th><th>Item</th><th>Price</th></tr></thead><tbody>${validPeopleForPrint.flatMap((person, pIdx) => person.items.map((item, iIdx) => `<tr><td>${pIdx * (person.items?.length || 0) + iIdx + 1}</td><td>${person.name || `Person ${pIdx + 1}`}</td><td> ${item.name || 'N/A'} ${item.notes ? `<div class="item-notes">Notes: ${item.notes}</div>` : ''} </td><td>${formatCurrency(item.price)}</td></tr>`)).join('')}</tbody></table></div><div class="totals-section"><div class="totals-box"><div><span>Subtotal:</span> <span>${formatCurrency(orderData.payment?.subtotal)}</span></div> ${additionalFees.map(fee => `<div><span>${fee.description || 'Additional Fee'}:</span> <span>${formatCurrency(fee.amount)}</span></div>`).join('')} ${orderData.payment?.calculatedDiscount > 0 ? `<div><span>Discount (${orderData.payment?.discountType === 'percent' ? `${orderData.payment?.discountValue}%` : 'Fixed'}):</span> <span>-${formatCurrency(orderData.payment?.calculatedDiscount)}</span></div>` : ''} <div class="grand-total" style="border-top: 1px solid #ccc; padding-top: 0.3em; margin-top: 0.3em;"><span>Grand Total:</span> <span>${formatCurrency(orderData.payment?.total)}</span></div><div><span>Total Paid:</span> <span>${formatCurrency(orderData.payment?.advance)}</span></div><div class="due"><span>Amount Due:</span> <span>${formatCurrency(orderData.payment?.pending)}</span></div></div></div> ${paymentHistory.length > 0 ? `<div style="margin-top: 1.5em; border-top: 1px dashed #ccc; padding-top: 1em;"><h5 style="font-size: 1em; margin-bottom: 0.3em;">Payment History:</h5><ul style="font-size:0.85em; padding-left: 1em; list-style:none;">${paymentHistory.map(p => `<li>${formatDateForDisplay(p.date?.toDate ? p.date.toDate() : p.date)} - ${formatCurrency(p.amount)} (${p.method})${p.notes && p.notes !== 'Initial Advance Payment' ? ` - ${p.notes}` : ''}</li>`).join('')}</ul></div>` : ''} ${orderData.notes ? `<div style="margin-top: 1.5em; border-top: 1px dashed #ccc; padding-top: 1em;"><h5 style="font-size: 1em; margin-bottom: 0.3em;">Order Notes:</h5><p style="font-size: 0.85em; white-space: pre-wrap;">${orderData.notes}</p></div>` : ''} <div class="footer">Thank you!</div>`;
+
+        // --- 2. Create an invisible iframe ---
+        const iframe = document.createElement('iframe');
+        iframe.style.position = 'absolute';
+        iframe.style.left = '-9999px';
+        iframe.style.width = '800px';
+
+        // --- 3. Use iframe.onload for reliability (replaces setTimeout) ---
+        iframe.onload = async () => {
+            try {
+                const doc = iframe.contentDocument || iframe.contentWindow.document;
+
+                // --- 4. Use html2canvas to "screenshot" the rendered HTML ---
+                const canvas = await html2canvas(doc.body, {
+                    useCORS: true,
+                    scale: 2
+                });
+
+                // --- 5. Create jsPDF and add the canvas image ---
+                const imgData = canvas.toDataURL('image/png');
+                const pdf = new jsPDF('p', 'mm', 'a4');
+                const pdfWidth = pdf.internal.pageSize.getWidth();
+                const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+                
+                pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+                const pdfBlob = pdf.output('blob');
+
+                // --- 6. Upload Blob to Firebase Storage ---
+                const storageRef = ref(storage, `invoices/${orderData.billNumber}.pdf`);
+                const snapshot = await uploadBytes(storageRef, pdfBlob);
+                
+                // --- 7. Get and return the Download URL ---
+                const downloadURL = await getDownloadURL(snapshot.ref);
+                
+                // --- 8. Clean up iframe and resolve the promise ---
+                document.body.removeChild(iframe);
+                resolve(downloadURL);
+
+            } catch (error) {
+                console.error("Error during PDF generation (iframe.onload):", error);
+                document.body.removeChild(iframe); // Ensure cleanup on error
+                reject(error);
+            }
+        };
+        
+        // --- 9. Set the iframe content using srcdoc and append to trigger onload ---
+        iframe.srcdoc = `<html><head><style>${printStyles}</style></head><body>${invoiceHTML}</body></html>`;
+        document.body.appendChild(iframe);
+    });
 };
 
 
@@ -509,13 +588,13 @@ const OrderFormPage = () => {
         const printWindow = window.open('', '_blank', 'height=800,width=800');
         if (!printWindow) { alert("Please allow popups to print."); return; }
         // Styles remain the same...
-        const printStyles = `@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');body{font-family:'Inter',sans-serif;margin:20px;line-height:1.5;color:#333;font-size:10pt}h2,h3,h4,h5{margin:0 0 .5em 0;padding:0;line-height:1.3;color:#393E41}p{margin:0 0 .3em 0}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border-bottom:1px solid #eee;padding:.4em .5em;text-align:left;vertical-align:top}th{background-color:#f8f9fa;font-weight:600;font-size:.9em;text-transform:uppercase;color:#6C757D}td:last-child,th:last-child{text-align:right}strong{font-weight:600}.invoice-header{text-align:center;margin-bottom:1.5em;border-bottom:2px solid #eee;padding-bottom:1em}.invoice-header h2{font-size:1.8em;font-weight:700;color:#44BBA4;margin-bottom:.1em}.invoice-header p{font-size:.85em;color:#555}.details-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.5em;margin-bottom:1.5em;padding-bottom:1em;border-bottom:1px dashed #ccc}.details-grid h5{font-size:1em;font-weight:600;color:#44BBA4;margin-bottom:.5em;border-bottom:1px solid #eee;padding-bottom:.3em}.details-grid p{font-size:.9em;color:#555}.items-section h3{font-size:1.1em;font-weight:600;margin-bottom:.5em}.item-notes{font-size:.8em;color:#666;font-style:italic;padding-left:1em;margin-top:.2em}.totals-section{display:flex;justify-content:flex-end;margin-top:1.5em;padding-top:1em;border-top:2px solid #eee}.totals-box{width:100%;max-width:280px;font-size:.9em}.totals-box div{display:flex;justify-content:space-between;margin-bottom:.3em}.totals-box span:first-child{color:#555;padding-right:1em}.totals-box span:last-child{font-weight:600;color:#333;min-width:80px;text-align:right;font-family:monospace}.totals-box .grand-total span{font-weight:700;font-size:1.1em;color:#393E41}.totals-box .due span:last-child{color:#D97706}.footer{margin-top:2em;text-align:center;font-size:.8em;color:#888;border-top:1px dashed #ccc;padding-top:.8em}.no-print,.no-print-invoice,.measurement-section-for-print{display:none!important}`;
+        const printStyles = `body{font-family:'Helvetica',sans-serif;margin:20px;line-height:1.5;color:#333;font-size:10pt}h2,h3,h4,h5{margin:0 0 .5em 0;padding:0;line-height:1.3;color:#393E41}p{margin:0 0 .3em 0}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border-bottom:1px solid #eee;padding:.4em .5em;text-align:left;vertical-align:top}th{background-color:#f8f9fa;font-weight:600;font-size:.9em;text-transform:uppercase;color:#6C757D}td:last-child,th:last-child{text-align:right}strong{font-weight:600}.invoice-header{text-align:center;margin-bottom:1.5em;border-bottom:2px solid #eee;padding-bottom:1em}.invoice-header h2{font-size:1.8em;font-weight:700;color:#44BBA4;margin-bottom:.1em}.invoice-header p{font-size:.85em;color:#555}.details-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.5em;margin-bottom:1.5em;padding-bottom:1em;border-bottom:1px dashed #ccc}.details-grid h5{font-size:1em;font-weight:600;color:#44BBA4;margin-bottom:.5em;border-bottom:1px solid #eee;padding-bottom:.3em}.details-grid p{font-size:.9em;color:#555}.items-section h3{font-size:1.1em;font-weight:600;margin-bottom:.5em}.item-notes{font-size:.8em;color:#666;font-style:italic;padding-left:1em;margin-top:.2em}.totals-section{display:flex;justify-content:flex-end;margin-top:1.5em;padding-top:1em;border-top:2px solid #eee}.totals-box{width:100%;max-width:280px;font-size:.9em}.totals-box div{display:flex;justify-content:space-between;margin-bottom:.3em}.totals-box span:first-child{color:#555;padding-right:1em}.totals-box span:last-child{font-weight:600;color:#333;min-width:80px;text-align:right;font-family:monospace}.totals-box .grand-total span{font-weight:700;font-size:1.1em;color:#393E41}.totals-box .due span:last-child{color:#D97706}.footer{margin-top:2em;text-align:center;font-size:.8em;color:#888;border-top:1px dashed #ccc;padding-top:.8em}.no-print,.no-print-invoice,.measurement-section-for-print{display:none!important}`;
         const validPeopleForPrint = orderData.people?.filter(p => p.name && p.items?.some(i => i.name)) || [];
         const additionalFees = orderData.payment?.additionalFees || [];
         const paymentHistory = orderData.payment?.paymentHistory || [];
         // Generate Invoice HTML
         // Modify payment summary section in invoiceHTML
-        const invoiceHTML = `<div class="invoice-header"><h2>THERON Tailors</h2><p>Order Slip / Invoice</p><p>Order ID: <strong>${orderData.billNumber || 'N/A'}</strong></p></div><div class="details-grid"><div><h5>Customer Details:</h5><p>Name: ${orderData.customer?.name || 'N/A'}</p><p>Phone: ${orderData.customer?.number || 'N/A'}</p></div><div><h5>Order Dates:</h5><p>Order Date: ${formatDateForDisplay(orderData.orderDate)}</p><p>Delivery Date: ${formatDateForDisplay(orderData.deliveryDate)}</p></div></div><div class="items-section"><h3>Order Items</h3><table><thead><tr><th>#</th><th>Person</th><th>Item</th><th>Price</th></tr></thead><tbody>${validPeopleForPrint.flatMap((person, pIdx) => person.items.map((item, iIdx) => `<tr><td>${pIdx * (person.items?.length || 0) + iIdx + 1}</td><td>${person.name || `Person ${pIdx + 1}`}</td><td> ${item.name || 'N/A'} ${item.notes ? `<div class="item-notes">Notes: ${item.notes}</div>` : ''} </td><td>${formatCurrency(item.price)}</td></tr>`)).join('')}</tbody></table></div><div class="totals-section"><div class="totals-box"><div><span>Subtotal:</span> <span>${formatCurrency(orderData.payment?.subtotal)}</span></div> ${additionalFees.map(fee => `<div><span>${fee.description || 'Additional Fee'}:</span> <span>${formatCurrency(fee.amount)}</span></div>`).join('')} ${orderData.payment?.calculatedDiscount > 0 ? `<div><span>Discount (${orderData.payment?.discountType === 'percent' ? `${orderData.payment?.discountValue}%` : 'Fixed'}):</span> <span>-${formatCurrency(orderData.payment?.calculatedDiscount)}</span></div>` : ''} <div class="grand-total" style="border-top: 1px solid #ccc; padding-top: 0.3em; margin-top: 0.3em;"><span>Grand Total:</span> <span>${formatCurrency(orderData.payment?.total)}</span></div><div><span>Total Paid:</span> <span>${formatCurrency(orderData.payment?.advance)}</span></div><div class="due"><span>Amount Due:</span> <span>${formatCurrency(orderData.payment?.pending)}</span></div></div></div> ${paymentHistory.length > 0 ? `<div style="margin-top: 1.5em; border-top: 1px dashed #ccc; padding-top: 1em;"><h5 style="font-size: 1em; margin-bottom: 0.3em;">Payment History:</h5><ul style="font-size:0.85em; padding-left: 1em; list-style:none;">${paymentHistory.map(p => `<li>${formatDateForDisplay(p.date?.toDate ? p.date.toDate() : p.date)} - ${formatCurrency(p.amount)} (${p.method})${p.notes && p.notes !== 'Initial Advance Payment' ? ` - ${p.notes}` : ''}</li>`).join('')}</ul></div>` : ''} ${orderData.notes ? `<div style="margin-top: 1.5em; border-top: 1px dashed #ccc; padding-top: 1em;"><h5 style="font-size: 1em; margin-bottom: 0.3em;">Order Notes:</h5><p style="font-size: 0.85em; white-space: pre-wrap;">${orderData.notes}</p></div>` : ''} <div class="footer">Thank you!</div>`;
+        const invoiceHTML = `<div class="invoice-header"><h2>THERON Tailors</h2><p>Order Slip / Invoice</p><p>Order ID: <strong>${orderData.billNumber || 'N/A'}</strong></p></div><div class="details-grid"><div><h5>Customer Details:</h5><p>Name: ${orderData.customer?.name || 'N/A'}</p><p>Phone: ${orderData.customer?.number || 'N/A'}</p></div><div><h5>Order Dates:</h5><p>Order Date: ${formatDateForDisplay(orderData.orderDate)}</p><p>Delivery Date: ${formatDateForDisplay(orderData.deliveryDate)}</p></div></div><div class="items-section"><h3>Order Items</h3><table><thead><tr><th>#</th><th>Person</th><th>Item</th><th>Price</th></tr></thead><tbody>${validPeopleForPrint.flatMap((person, pIdx) => person.items.map((item, iIdx) => `<tr><td>${pIdx * (person.items?.length || 0) + iIdx + 1}</td><td>${person.name || `Person ${pIdx + 1}`}</td><td> ${item.name || 'N/A'} ${item.notes ? `<div class="item-notes">Notes: ${item.notes}</div>` : ''} </td><td>${formatCurrency(item.price)}</td></tr>`)).join('')}</tbody></table></div><div class="totals-section"><div class="totals-box"><div><span>Subtotal:</span> <span>${formatCurrency(orderData.payment?.subtotal)}</span></div> ${additionalFees.map(fee => `<div><span>${fee.description || 'Additional Fee'}:</span> <span>${formatCurrency(fee.amount)}</span></div>`).join('')} ${orderData.payment?.calculatedDiscount > 0 ? `<div><span>Discount (${orderData.payment?.discountType === 'percent' ? `${orderData.payment?.discountValue}%` : 'Fixed'}):</span> <span>-${formatCurrency(orderData.payment?.calculatedDiscount)}</span></div>` : ''} <div class="grand-total" style="border-top: 1px solid #ccc; padding-top: 0.3em; margin-top: 0.3em;"><span>Grand Total:</span> <span>${formatCurrency(orderData.payment?.total)}</span></div><div><span>Total Paid:</span> <span>${formatCurrency(orderData.payment?.advance)}</span></div><div class="due"><span>Amount Due:</span> <span>${formatCurrency(orderData.payment?.pending)}</span></div></div></div> ${paymentHistory.length > 0 ? `<div style="margin-top: 1.5em; border-top: 1px dashed #ccc; padding-top: 1em;"><h5 style="font-size: 1em; margin-bottom: 0.3em;">Payment History:</h5><ul style="font-size:0.85em; padding-left: 1em; list-style:none;">${paymentHistory.map(p => `<li>${formatDateForDisplay(p.date?.toDate ? p.date.toDate() : p.date)} - ${formatCurrency(p.amount)} (${p.method})${p.notes && p.notes !== 'Initial Advance Payment' ? ` - ${p.notes}` : ''}</li>`).join('')}</ul></div>` : ''} ${orderData.notes ? `<div style="margin-top: 1.5em; border-top: 1px dashed #ccc; padding-top: 1em;"><h5 style="font-size: 1em; margin-bottom: 0.3em;">Order Notes:</h5><p style="font-size: 0.85em; white-space: pre-wrap;">${orderData.notes}</p></div>` : ''} <div class="footer">Crafted with care, tailored for you.</div>`;
         printWindow.document.write(`<html><head><title>Invoice: ${orderData.billNumber || 'Order'}</title><style>${printStyles}</style></head><body>${invoiceHTML}</body></html>`);
         printWindow.document.close();
         printWindow.focus();
@@ -523,7 +602,7 @@ const OrderFormPage = () => {
   };
 
 
-  // --- Form Submission ---
+  // --- Form Submission (Updated) ---
   const handleSubmitOrder = async (e) => {
       e.preventDefault();
       setIsSaving(true);
@@ -675,13 +754,28 @@ const OrderFormPage = () => {
             };
         }
 
-        // Send Notification only for new orders
+        // --- NEW: PDF Generation & Notification Logic ---
+        let invoiceUrl = null;
         if (isNewOrder && savedDataForNotification) {
-             sendNewOrderNotification(savedDataForNotification);
+             try {
+                // Let user know the PDF is generating
+                console.log("Generating & uploading PDF invoice...");
+                // This will generate, upload, and return the public URL
+                invoiceUrl = await generateAndUploadInvoicePdf(savedDataForNotification);
+                console.log("PDF successfully uploaded:", invoiceUrl);
+             } catch (pdfError) {
+                console.error("Failed to generate or upload PDF invoice:", pdfError);
+                alert("Order was saved, but the PDF invoice failed to generate or upload. You can print it manually.");
+                // We don't stop; the notification will just send without the link.
+             }
+             
+             // Send notification, now with the invoiceUrl (which is null if PDF failed)
+             sendNewOrderNotification(savedDataForNotification, invoiceUrl);
         }
+        // --- END NEW LOGIC ---
 
         // Ask for print confirmation
-        if (window.confirm(`Order ${isNewOrder ? 'placed' : 'updated'} successfully! (ID: ${currentBillNumber})\n\nPrint invoice?`)) {
+        if (window.confirm(`Order ${isNewOrder ? 'placed' : 'updated'} successfully! (ID: ${currentBillNumber})\n\nPrint invoice manually?`)) {
             printInvoice(savedDataForNotification);
         }
 
