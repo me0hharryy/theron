@@ -116,7 +116,7 @@ Advance Paid: ${formatCurrency(payment.advance)} (${payment.method || 'N/A'})
 
     // --- NEW: Add the invoice URL to the message if it exists ---
     const invoiceLink = invoiceUrl 
-        ? ` ● Download your invoice:\n${invoiceUrl}` // 📎 emoji
+        ? `\n ● Download your invoice:\n${invoiceUrl}` // 📎 emoji
         : '';
 
     const message = `Namaste${customerName},\nYour order with *New Welcome Tailors* (ID: ${orderId}) has been received! \nPromised Delivery Date: ${deliveryDate}${itemsSummary}\n${invoiceSummary}${invoiceLink}\n\nWe'll keep you updated on the progress. *Thank you!*`;
