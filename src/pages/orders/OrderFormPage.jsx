@@ -18,7 +18,6 @@ import { FiPlus, FiTrash2, FiUpload, FiTag, FiPlusSquare, FiArrowLeft, FiSave } 
 
 // --- Constants & Templates ---
 const MAX_STEPS = 3;
-// Removed the global MEASUREMENT_FIELDS constant, it will now be dynamic per item
 
 const newOrderItemTemplate = () => ({
   id: crypto.randomUUID(), name: '', price: 0,
@@ -27,7 +26,6 @@ const newOrderItemTemplate = () => ({
   notes: '', designPhoto: '', status: 'Received', cutter: '', sewer: ''
 });
 const newPersonTemplate = () => ({ name: '', items: [newOrderItemTemplate()] });
-// Modified fee template to track selection and manual entry
 const newAdditionalFeeTemplate = () => ({
     id: crypto.randomUUID(),
     description: '', // This might hold the selected value or manual input
@@ -41,11 +39,15 @@ const newOrderTemplate = () => ({
   deliveryDate: new Date().toISOString().split('T')[0], notes: '', people: [newPersonTemplate()],
   payment: {
       subtotal: 0, discountType: 'fixed', discountValue: 0, calculatedDiscount: 0,
-      additionalFees: [], total: 0, advance: 0, pending: 0, method: 'Cash'
+      additionalFees: [], total: 0,
+      advance: 0, // Keep 'advance' to store the TOTAL amount paid so far
+      pending: 0, method: 'Cash',
+      paymentHistory: [], // <--- Add this array
   },
   status: 'Active',
   orderDate: Timestamp.now(), billNumber: `TH-${Date.now()}` // Generate initial bill number
 });
+
 
 // --- Helper Functions outside component ---
 const formatCurrency = (amount) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(amount ?? 0);
@@ -137,10 +139,8 @@ const OrderFormPage = () => {
     return tailoringItems.map(item => ({ value: item.name, label: item.name }));
   }, [tailoringItems]);
 
-  // --- MODIFIED: Fee Options (Removed amount from label) ---
   const feeOptions = useMemo(() => {
     if (!additionalFees) return [];
-    // Sort alphabetically by description before mapping
     const sortedFees = [...additionalFees].sort((a, b) =>
         (a.description || '').localeCompare(b.description || '')
     );
@@ -167,9 +167,12 @@ const OrderFormPage = () => {
                 ...baseTemplate, ...data, id: orderDoc.id, deliveryDate,
                 customer: { ...baseTemplate.customer, ...(data.customer || {}) },
                 payment: {
-                    ...baseTemplate.payment, ...(data.payment || {}),
+                    ...baseTemplate.payment,
+                    ...(data.payment || {}),
+                    // Ensure paymentHistory is an array and fees have flags
+                    paymentHistory: Array.isArray(data.payment?.paymentHistory) ? data.payment.paymentHistory : [],
                     additionalFees: (Array.isArray(data.payment?.additionalFees) ? data.payment.additionalFees : [])
-                                      .map(fee => ({...newAdditionalFeeTemplate(), ...fee})) // Ensure flags exist
+                                      .map(fee => ({...newAdditionalFeeTemplate(), ...fee}))
                  },
                 people: data.people?.map(p => ({
                     name: p.name || '',
@@ -197,9 +200,10 @@ const OrderFormPage = () => {
         } else { console.error("Order not found:", id); alert("Order not found."); navigate('/orders'); }
     } catch (error) { console.error("Error fetching order:", error); alert("Error loading order details."); }
     finally { setFormLoading(false); }
-  }, [navigate, tailoringItems]);
+  }, [navigate, tailoringItems]); // Added tailoringItems dependency
 
   useEffect(() => {
+      // Ensure tailoringItems and additionalFees are loaded before fetching/initializing
       if (!itemsLoading && !feesLoading) {
           if (orderId) {
              fetchOrder(orderId);
@@ -208,7 +212,7 @@ const OrderFormPage = () => {
              setFormLoading(false);
            }
       }
-  }, [orderId, fetchOrder, itemsLoading, feesLoading]);
+  }, [orderId, fetchOrder, itemsLoading, feesLoading]); // Add dependencies
 
 
   // --- State Update Handlers ---
@@ -220,9 +224,10 @@ const OrderFormPage = () => {
               const person1Name = newState.people?.[0]?.name;
                if (id === 'name') {
                    if (value === '' || (newState.people?.[0] && value === person1Name)) {
-                       setPerson1NameManuallyEdited(false);
+                       setPerson1NameManuallyEdited(false); // Reset flag if name matches or is cleared
                    }
                }
+              // Auto-fill person 1 name only if not manually edited
               if (id === 'name' && !person1NameManuallyEdited && newState.people?.[0]) {
                   newState.people = newState.people.map((p, idx) => idx === 0 ? { ...p, name: value } : p);
               }
@@ -240,6 +245,7 @@ const OrderFormPage = () => {
             ...prev,
             payment: {
                 ...prev.payment,
+                // Only allow positive numbers for advance and discountValue
                 [id]: ['advance', 'discountValue'].includes(id) ? Math.max(0, numValue) : value
             }
         }));
@@ -266,20 +272,24 @@ const OrderFormPage = () => {
                 if (field === 'descriptionSelect') {
                     const selectedFeeOption = feeOptions.find(opt => opt.value === value);
                     if (value === '_manual_') {
-                        newFee.description = '';
+                        // User selected manual entry
+                        newFee.description = ''; // Clear description, user will type it
                         newFee.isManualDescription = true;
-                        // Keep current amount if user switches TO manual, otherwise default
-                        newFee.amount = fee.amount || 0;
+                        // Keep current amount if user switches TO manual, otherwise default? Let's reset to 0 for clarity.
+                        newFee.amount = 0; // Reset amount when switching to manual
                     } else if (selectedFeeOption) {
+                        // User selected a predefined fee
                         newFee.description = selectedFeeOption.value;
                         newFee.amount = selectedFeeOption.defaultAmount; // Auto-fill amount
                         newFee.isManualDescription = false;
                     } else {
+                        // Handle case where selection is cleared (e.g., "-- Select --")
                         newFee.description = '';
-                        newFee.isManualDescription = true;
+                        newFee.isManualDescription = true; // Default back to manual if cleared
                         newFee.amount = 0;
                     }
                 } else if (field === 'manualDescription') {
+                    // Only update if currently in manual mode
                     if (newFee.isManualDescription) {
                         newFee.description = value;
                     }
@@ -296,7 +306,9 @@ const OrderFormPage = () => {
 
   // Auto-fill Person 1 Name Effect
   useEffect(() => {
+    // Only run if it's a new order, person 1 name hasn't been manually edited, and people array exists
     if (!orderId && !person1NameManuallyEdited && order.people?.length > 0) {
+        // Check if person 1 name is different from customer name
         if (order.people[0].name !== order.customer.name) {
             setOrder(prevOrder => ({
                 ...prevOrder,
@@ -306,18 +318,24 @@ const OrderFormPage = () => {
             }));
         }
     }
-  }, [order.customer.name, orderId, person1NameManuallyEdited, order.people]);
+  }, [order.customer.name, orderId, person1NameManuallyEdited, order.people]); // Dependencies
+
 
   // Person/Item Add/Remove/NameChange Handlers
   const handleAddPerson = () => setOrder(prev => ({ ...prev, people: [...(prev.people || []), newPersonTemplate()] }));
   const handleRemovePerson = (personIndex) => { if (order.people?.length > 1) { setOrder(prev => ({ ...prev, people: prev.people.filter((_, i) => i !== personIndex) })); } };
   const handlePersonNameChange = (personIndex, name) => {
+      // Check if editing Person 1
       if (personIndex === 0) {
-          setPerson1NameManuallyEdited(true);
-          if (name === order.customer.name) {
+          // If the new name is different from the customer name, set the flag
+          if (name !== order.customer.name) {
+              setPerson1NameManuallyEdited(true);
+          } else {
+              // If it's changed back to match the customer name, clear the flag
               setPerson1NameManuallyEdited(false);
           }
       }
+      // Update the state
       setOrder(prev => ({
             ...prev,
             people: prev.people.map((p, i) => i === personIndex ? { ...p, name } : p)
@@ -332,100 +350,157 @@ const OrderFormPage = () => {
         }));
    };
   const handleRemoveItem = (personIndex, itemIndex) => {
-      if (order.people?.[personIndex]?.items?.length > 1) {
-          setOrder(prev => ({
-                ...prev,
-                people: prev.people.map((p, i) =>
-                    i === personIndex
-                     ? { ...p, items: p.items.filter((_, j) => j !== itemIndex) }
-                     : p
-                )
-            }));
-       }
+      // Allow removing the last item for a person
+      setOrder(prev => ({
+            ...prev,
+            people: prev.people.map((p, i) =>
+                i === personIndex
+                 ? { ...p, items: p.items.filter((_, j) => j !== itemIndex) }
+                 : p
+            )
+        }));
    };
 
   // Update item field handler (Handles dynamic measurements)
   const handleItemChange = (personIndex, itemIndex, field, value) => {
     setOrder(prev => {
+        // Deep copy only the people array to avoid mutation issues
         const newPeople = JSON.parse(JSON.stringify(prev.people));
         const person = newPeople[personIndex];
-        if (!person || !person.items || !person.items[itemIndex]) { return prev; }
+        if (!person || !person.items || !person.items[itemIndex]) {
+            console.error("Invalid person or item index");
+            return prev; // Return previous state if indices are invalid
+        }
         const item = person.items[itemIndex];
+
+        // Ensure measurements and dynamic fields exist
         item.measurements = item.measurements || {};
         item.dynamicMeasurementFields = item.dynamicMeasurementFields || [];
 
+        // Check if the field is one of the dynamic measurement fields
         if (item.dynamicMeasurementFields.includes(field)) {
             item.measurements[field] = value;
         } else {
+            // Otherwise, update the direct property of the item
             item[field] = value;
         }
 
+        // Special handling when item name changes
         if (field === 'name') {
             const masterItem = tailoringItems?.find(ti => ti.name === value);
-            item.price = masterItem?.customerPrice || 0;
-            const requiredFields = masterItem?.requiredMeasurements?.split(',').map(f => f.trim()).filter(f => f) || [];
+            item.price = masterItem?.customerPrice || 0; // Update price
+            // Update dynamic measurement fields based on the selected master item
+            const requiredFields = masterItem?.requiredMeasurements?.split(',')
+                                        .map(f => f.trim())
+                                        .filter(f => f) || [];
             item.dynamicMeasurementFields = requiredFields;
+            // Reset measurements, keeping existing values if the field is still required
             const newMeasurements = {};
             requiredFields.forEach(reqField => {
-                newMeasurements[reqField] = item.measurements[reqField] || '';
+                newMeasurements[reqField] = item.measurements[reqField] || ''; // Preserve existing value if field persists
             });
-            item.measurements = newMeasurements;
+            item.measurements = newMeasurements; // Assign the potentially pruned/updated measurements
         }
 
+        // Ensure price is stored as a number
         if (field === 'price') {
             item.price = Number(value) || 0;
         }
+
+        // Return the updated state
         return { ...prev, people: newPeople };
     });
   };
 
+
   // Image Upload Handler
   const handleImageUpload = (personIndex, itemIndex, file) => {
-       if (!file) { alert("No file selected."); return; }
+       if (!file) { /* alert("No file selected."); */ return; } // Don't alert if no file
        if (file.size > 5 * 1024 * 1024) { alert("File is too large (max 5MB)."); return; }
        const itemId = order.people?.[personIndex]?.items?.[itemIndex]?.id;
        if (!itemId) { console.error("Item ID missing for upload."); return; }
        const uniqueFileName = `${itemId}-${Date.now()}-${file.name}`;
-       const orderIdentifier = orderId || order.billNumber || 'newOrder';
+       const orderIdentifier = orderId || order.billNumber || 'newOrder'; // Use existing ID or bill number
        const storagePath = `orderDesigns/${orderIdentifier}/${uniqueFileName}`;
        const storageRef = ref(storage, storagePath);
        const uploadTask = uploadBytesResumable(storageRef, file);
+
+       // Update progress state for this specific item ID
        setUploadProgress(prev => ({ ...prev, [itemId]: 0 }));
-       uploadTask.on('state_changed', (snapshot) => {
-           const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-           setUploadProgress(prev => ({ ...prev, [itemId]: progress }));
-       }, (error) => {
-           console.error("Upload failed:", error); alert(`Upload failed: ${error.code}`);
-           setUploadProgress(prev => ({ ...prev, [itemId]: -1 }));
-       }, () => {
-           getDownloadURL(uploadTask.snapshot.ref).then((downloadURL) => {
-               handleItemChange(personIndex, itemIndex, 'designPhoto', downloadURL);
-               setUploadProgress(prev => ({ ...prev, [itemId]: 100 }));
-           }).catch((error) => {
-               console.error("Error getting download URL:", error); alert(`Failed to get image URL after upload: ${error.code}`);
-               setUploadProgress(prev => ({ ...prev, [itemId]: -1 }));
-           });
-       });
+
+       uploadTask.on('state_changed',
+           (snapshot) => { // Progress
+               const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+               setUploadProgress(prev => ({ ...prev, [itemId]: progress }));
+           },
+           (error) => { // Error
+               console.error("Upload failed:", error);
+               alert(`Upload failed: ${error.code}`);
+               setUploadProgress(prev => ({ ...prev, [itemId]: -1 })); // Indicate error
+           },
+           () => { // Complete
+               getDownloadURL(uploadTask.snapshot.ref).then((downloadURL) => {
+                   handleItemChange(personIndex, itemIndex, 'designPhoto', downloadURL);
+                   setUploadProgress(prev => ({ ...prev, [itemId]: 100 })); // Indicate success
+               }).catch((error) => {
+                   console.error("Error getting download URL:", error);
+                   alert(`Failed to get image URL after upload: ${error.code}`);
+                   setUploadProgress(prev => ({ ...prev, [itemId]: -1 })); // Indicate error getting URL
+               });
+           }
+       );
   };
 
 
   // --- Recalculate Totals Effect ---
   useEffect(() => {
+     // Calculate subtotal from valid items
      const subtotal = order.people?.reduce((acc, person) =>
-         acc + (person.items?.reduce((itemAcc, item) => itemAcc + (Number(item.price) || 0), 0) || 0), 0) || 0;
+         acc + (person.items?.reduce((itemAcc, item) => itemAcc + (Number(item.price) || 0), 0) || 0),
+     0) || 0;
+
+     // Calculate total from valid additional fees
      const feesTotal = order.payment?.additionalFees?.reduce((acc, fee) => acc + (Number(fee.amount) || 0), 0) || 0;
+
+     // Calculate discount
      let calculatedDiscount = 0;
      const discountVal = Number(order.payment?.discountValue) || 0;
-     if (order.payment?.discountType === 'percent' && discountVal > 0) { calculatedDiscount = (subtotal + feesTotal) * (discountVal / 100); }
-     else if (order.payment?.discountType === 'fixed' && discountVal > 0) { calculatedDiscount = discountVal; }
-     calculatedDiscount = Math.min(calculatedDiscount, subtotal + feesTotal);
-     const total = subtotal + feesTotal - calculatedDiscount;
-     const advance = Number(order.payment?.advance) || 0;
-     const pending = total - advance;
-     if ( order.payment?.subtotal !== subtotal || order.payment?.calculatedDiscount !== calculatedDiscount || order.payment?.total !== total || order.payment?.pending !== pending ) {
-        setOrder(prev => ({ ...prev, payment: { ...prev.payment, subtotal: parseFloat(subtotal.toFixed(2)), calculatedDiscount: parseFloat(calculatedDiscount.toFixed(2)), total: parseFloat(total.toFixed(2)), pending: parseFloat(pending.toFixed(2)) } }));
+     const preDiscountTotal = subtotal + feesTotal; // Base for percentage calculation
+
+     if (order.payment?.discountType === 'percent' && discountVal > 0) {
+         calculatedDiscount = preDiscountTotal * (discountVal / 100);
+     } else if (order.payment?.discountType === 'fixed' && discountVal > 0) {
+         calculatedDiscount = discountVal;
      }
-  }, [order.people, order.payment.additionalFees, order.payment.discountType, order.payment.discountValue, order.payment.advance, order.payment.subtotal, order.payment.calculatedDiscount, order.payment.total, order.payment.pending]);
+
+     // Ensure discount doesn't exceed the pre-discount total
+     calculatedDiscount = Math.min(calculatedDiscount, preDiscountTotal);
+
+     // Calculate final total and pending amount
+     const total = preDiscountTotal - calculatedDiscount;
+     const advance = Number(order.payment?.advance) || 0; // Use current advance (total paid)
+     const pending = total - advance; // Pending is total minus total paid
+
+     // Only update state if calculated values differ to prevent infinite loops
+     if (
+        order.payment?.subtotal !== subtotal ||
+        order.payment?.calculatedDiscount !== calculatedDiscount ||
+        order.payment?.total !== total ||
+        order.payment?.pending !== pending
+     ) {
+        setOrder(prev => ({
+            ...prev,
+            payment: {
+                ...prev.payment,
+                subtotal: parseFloat(subtotal.toFixed(2)),
+                calculatedDiscount: parseFloat(calculatedDiscount.toFixed(2)),
+                total: parseFloat(total.toFixed(2)),
+                pending: parseFloat(pending.toFixed(2)) // This will be updated by payment history later
+            }
+        }));
+     }
+     // Dependencies: Recalculate whenever items, fees, discount, or advance changes
+  }, [order.people, order.payment.additionalFees, order.payment.discountType, order.payment.discountValue, order.payment.advance, order.payment]);
 
 
   // --- PRINT INVOICE FUNCTION (Internal) ---
@@ -433,10 +508,14 @@ const OrderFormPage = () => {
         if (!orderData) { console.error("No order data for printInvoice."); return; }
         const printWindow = window.open('', '_blank', 'height=800,width=800');
         if (!printWindow) { alert("Please allow popups to print."); return; }
+        // Styles remain the same...
         const printStyles = `@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');body{font-family:'Inter',sans-serif;margin:20px;line-height:1.5;color:#333;font-size:10pt}h2,h3,h4,h5{margin:0 0 .5em 0;padding:0;line-height:1.3;color:#393E41}p{margin:0 0 .3em 0}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border-bottom:1px solid #eee;padding:.4em .5em;text-align:left;vertical-align:top}th{background-color:#f8f9fa;font-weight:600;font-size:.9em;text-transform:uppercase;color:#6C757D}td:last-child,th:last-child{text-align:right}strong{font-weight:600}.invoice-header{text-align:center;margin-bottom:1.5em;border-bottom:2px solid #eee;padding-bottom:1em}.invoice-header h2{font-size:1.8em;font-weight:700;color:#44BBA4;margin-bottom:.1em}.invoice-header p{font-size:.85em;color:#555}.details-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.5em;margin-bottom:1.5em;padding-bottom:1em;border-bottom:1px dashed #ccc}.details-grid h5{font-size:1em;font-weight:600;color:#44BBA4;margin-bottom:.5em;border-bottom:1px solid #eee;padding-bottom:.3em}.details-grid p{font-size:.9em;color:#555}.items-section h3{font-size:1.1em;font-weight:600;margin-bottom:.5em}.item-notes{font-size:.8em;color:#666;font-style:italic;padding-left:1em;margin-top:.2em}.totals-section{display:flex;justify-content:flex-end;margin-top:1.5em;padding-top:1em;border-top:2px solid #eee}.totals-box{width:100%;max-width:280px;font-size:.9em}.totals-box div{display:flex;justify-content:space-between;margin-bottom:.3em}.totals-box span:first-child{color:#555;padding-right:1em}.totals-box span:last-child{font-weight:600;color:#333;min-width:80px;text-align:right;font-family:monospace}.totals-box .grand-total span{font-weight:700;font-size:1.1em;color:#393E41}.totals-box .due span:last-child{color:#D97706}.footer{margin-top:2em;text-align:center;font-size:.8em;color:#888;border-top:1px dashed #ccc;padding-top:.8em}.no-print,.no-print-invoice,.measurement-section-for-print{display:none!important}`;
         const validPeopleForPrint = orderData.people?.filter(p => p.name && p.items?.some(i => i.name)) || [];
         const additionalFees = orderData.payment?.additionalFees || [];
-        const invoiceHTML = `<div class="invoice-header"><h2>THERON Tailors</h2><p>Order Slip / Invoice</p><p>Order ID: <strong>${orderData.billNumber || 'N/A'}</strong></p></div><div class="details-grid"><div><h5>Customer Details:</h5><p>Name: ${orderData.customer?.name || 'N/A'}</p><p>Phone: ${orderData.customer?.number || 'N/A'}</p></div><div><h5>Order Dates:</h5><p>Order Date: ${formatDateForDisplay(orderData.orderDate)}</p><p>Delivery Date: ${formatDateForDisplay(orderData.deliveryDate)}</p></div></div><div class="items-section"><h3>Order Items</h3><table><thead><tr><th>#</th><th>Person</th><th>Item</th><th>Price</th></tr></thead><tbody>${validPeopleForPrint.flatMap((person, pIdx) => person.items.map((item, iIdx) => `<tr><td>${pIdx * (person.items?.length || 0) + iIdx + 1}</td><td>${person.name || `Person ${pIdx + 1}`}</td><td> ${item.name || 'N/A'} ${item.notes ? `<div class="item-notes">Notes: ${item.notes}</div>` : ''} </td><td>${formatCurrency(item.price)}</td></tr>`)).join('')}</tbody></table></div><div class="totals-section"><div class="totals-box"><div><span>Subtotal:</span> <span>${formatCurrency(orderData.payment?.subtotal)}</span></div> ${additionalFees.map(fee => `<div><span>${fee.description || 'Additional Fee'}:</span> <span>${formatCurrency(fee.amount)}</span></div>`).join('')} ${orderData.payment?.calculatedDiscount > 0 ? `<div><span>Discount (${orderData.payment?.discountType === 'percent' ? `${orderData.payment?.discountValue}%` : 'Fixed'}):</span> <span>-${formatCurrency(orderData.payment?.calculatedDiscount)}</span></div>` : ''} <div class="grand-total" style="border-top: 1px solid #ccc; padding-top: 0.3em; margin-top: 0.3em;"><span>Grand Total:</span> <span>${formatCurrency(orderData.payment?.total)}</span></div><div><span>Advance Paid (${orderData.payment?.method || 'N/A'}):</span> <span>${formatCurrency(orderData.payment?.advance)}</span></div><div class="due"><span>Amount Due:</span> <span>${formatCurrency(orderData.payment?.pending)}</span></div></div></div> ${orderData.notes ? `<div style="margin-top: 1.5em; border-top: 1px dashed #ccc; padding-top: 1em;"><h5 style="font-size: 1em; margin-bottom: 0.3em;">Order Notes:</h5><p style="font-size: 0.85em; white-space: pre-wrap;">${orderData.notes}</p></div>` : ''} <div class="footer">Thank you!</div>`;
+        const paymentHistory = orderData.payment?.paymentHistory || [];
+        // Generate Invoice HTML
+        // Modify payment summary section in invoiceHTML
+        const invoiceHTML = `<div class="invoice-header"><h2>THERON Tailors</h2><p>Order Slip / Invoice</p><p>Order ID: <strong>${orderData.billNumber || 'N/A'}</strong></p></div><div class="details-grid"><div><h5>Customer Details:</h5><p>Name: ${orderData.customer?.name || 'N/A'}</p><p>Phone: ${orderData.customer?.number || 'N/A'}</p></div><div><h5>Order Dates:</h5><p>Order Date: ${formatDateForDisplay(orderData.orderDate)}</p><p>Delivery Date: ${formatDateForDisplay(orderData.deliveryDate)}</p></div></div><div class="items-section"><h3>Order Items</h3><table><thead><tr><th>#</th><th>Person</th><th>Item</th><th>Price</th></tr></thead><tbody>${validPeopleForPrint.flatMap((person, pIdx) => person.items.map((item, iIdx) => `<tr><td>${pIdx * (person.items?.length || 0) + iIdx + 1}</td><td>${person.name || `Person ${pIdx + 1}`}</td><td> ${item.name || 'N/A'} ${item.notes ? `<div class="item-notes">Notes: ${item.notes}</div>` : ''} </td><td>${formatCurrency(item.price)}</td></tr>`)).join('')}</tbody></table></div><div class="totals-section"><div class="totals-box"><div><span>Subtotal:</span> <span>${formatCurrency(orderData.payment?.subtotal)}</span></div> ${additionalFees.map(fee => `<div><span>${fee.description || 'Additional Fee'}:</span> <span>${formatCurrency(fee.amount)}</span></div>`).join('')} ${orderData.payment?.calculatedDiscount > 0 ? `<div><span>Discount (${orderData.payment?.discountType === 'percent' ? `${orderData.payment?.discountValue}%` : 'Fixed'}):</span> <span>-${formatCurrency(orderData.payment?.calculatedDiscount)}</span></div>` : ''} <div class="grand-total" style="border-top: 1px solid #ccc; padding-top: 0.3em; margin-top: 0.3em;"><span>Grand Total:</span> <span>${formatCurrency(orderData.payment?.total)}</span></div><div><span>Total Paid:</span> <span>${formatCurrency(orderData.payment?.advance)}</span></div><div class="due"><span>Amount Due:</span> <span>${formatCurrency(orderData.payment?.pending)}</span></div></div></div> ${paymentHistory.length > 0 ? `<div style="margin-top: 1.5em; border-top: 1px dashed #ccc; padding-top: 1em;"><h5 style="font-size: 1em; margin-bottom: 0.3em;">Payment History:</h5><ul style="font-size:0.85em; padding-left: 1em; list-style:none;">${paymentHistory.map(p => `<li>${formatDateForDisplay(p.date?.toDate ? p.date.toDate() : p.date)} - ${formatCurrency(p.amount)} (${p.method})${p.notes && p.notes !== 'Initial Advance Payment' ? ` - ${p.notes}` : ''}</li>`).join('')}</ul></div>` : ''} ${orderData.notes ? `<div style="margin-top: 1.5em; border-top: 1px dashed #ccc; padding-top: 1em;"><h5 style="font-size: 1em; margin-bottom: 0.3em;">Order Notes:</h5><p style="font-size: 0.85em; white-space: pre-wrap;">${orderData.notes}</p></div>` : ''} <div class="footer">Thank you!</div>`;
         printWindow.document.write(`<html><head><title>Invoice: ${orderData.billNumber || 'Order'}</title><style>${printStyles}</style></head><body>${invoiceHTML}</body></html>`);
         printWindow.document.close();
         printWindow.focus();
@@ -449,23 +528,47 @@ const OrderFormPage = () => {
       e.preventDefault();
       setIsSaving(true);
 
-      // Validation...
+      // --- Validation ---
       if (!order.customer.name || !order.customer.number) { alert("Customer Name and Number required."); setIsSaving(false); setCurrentStep(1); return; }
       if (!order.deliveryDate) { alert("Delivery Date required."); setIsSaving(false); setCurrentStep(1); return; }
-      const validPeople = order.people?.map(person => ({ ...person, name: person.name.trim(), items: person.items?.filter(item => item.name) || [] })).filter(person => person.name && person.items.length > 0) || [];
-      if (validPeople.length === 0) { alert("Order must have at least one person with a name and one item."); setIsSaving(false); setCurrentStep(2); return; }
-      if (order.people.some(person => !person.name.trim())) { alert("Please enter a name for every person added."); setIsSaving(false); setCurrentStep(2); return; }
+      // Filter people with a name and at least one item *with a name*
+      const validPeople = order.people?.map(person => ({
+          ...person,
+          name: person.name.trim(), // Trim person name
+          items: person.items?.filter(item => item.name && item.name.trim()) || [] // Filter items with names
+      })).filter(person => person.name && person.items.length > 0) || []; // Filter people with names and valid items
 
-      // Prepare data
+      if (validPeople.length === 0) { alert("Order must have at least one person with a name and one item with a name selected."); setIsSaving(false); setCurrentStep(2); return; }
+      // Check if any added person is missing a name
+      if (order.people.some(person => !person.name?.trim())) { alert("Please enter a name for every person added."); setIsSaving(false); setCurrentStep(2); return; }
+      // --- End Validation ---
+
+      // Prepare delivery date timestamp
       let deliveryTimestamp;
       try {
-          deliveryTimestamp = Timestamp.fromDate(new Date(order.deliveryDate + 'T00:00:00'));
+          // Ensure time part is handled correctly (set to start of day UTC for consistency)
+          deliveryTimestamp = Timestamp.fromDate(new Date(order.deliveryDate + 'T00:00:00Z'));
       } catch (dateError) {
           console.error("Error converting delivery date:", dateError);
           alert("Invalid Delivery Date format. Please check the date.");
           setIsSaving(false);
           return;
       }
+
+      // --- Prepare Initial Payment Record ---
+      const initialAdvanceAmount = Number(order.payment.advance) || 0;
+      const initialPaymentMethod = order.payment.method || 'Cash';
+      const initialPaymentHistory = [];
+      if (!orderId && initialAdvanceAmount > 0) { // Only add initial advance record for NEW orders
+           initialPaymentHistory.push({
+                date: Timestamp.now(), // Use current time for the initial record
+                amount: initialAdvanceAmount,
+                method: initialPaymentMethod,
+                notes: 'Initial Advance Payment'
+            });
+       }
+       // --- End Initial Payment Record Prep ---
+
 
       const dataToSave = {
         customer: { name: order.customer.name.trim(), number: order.customer.number.trim(), email: order.customer.email?.trim() || '' },
@@ -480,15 +583,16 @@ const OrderFormPage = () => {
                 .filter(fee => fee.description && fee.description.trim() !== '' && fee.amount >= 0)
                 .map(fee => ({ description: fee.description.trim(), amount: fee.amount })), // Save only desc and amount
             total: order.payment.total || 0,
-            advance: order.payment.advance || 0,
-            pending: order.payment.pending || 0,
-            method: order.payment.method || 'Cash'
+            advance: initialAdvanceAmount, // Save initial advance here (represents total paid initially)
+            pending: order.payment.pending || 0, // Pending calculation should already be correct based on initial advance
+            method: initialPaymentMethod, // Store the method of the *initial* advance
+            paymentHistory: initialPaymentHistory // <--- Save the initial history (empty if updating)
         },
         people: validPeople.map(person => ({
             ...person,
             items: person.items.map(item => ({
-                id: item.id,
-                name: item.name,
+                id: item.id || crypto.randomUUID(), // Ensure ID exists
+                name: item.name.trim(), // Trim item name
                 price: Number(item.price) || 0,
                 measurements: Object.entries(item.measurements || {}).filter(([, value]) => value && String(value).trim() !== '').reduce((obj, [key, value]) => { obj[key] = String(value).trim(); return obj; }, {}),
                 notes: item.notes?.trim() || '',
@@ -499,10 +603,11 @@ const OrderFormPage = () => {
             }))
         })),
         updatedAt: Timestamp.now(),
+        // Only set orderDate on creation, preserve existing on update
         ...( !orderId && { orderDate: order.orderDate instanceof Timestamp ? order.orderDate : Timestamp.now() } ),
-        ...( orderId && order.orderDate instanceof Timestamp && { orderDate: order.orderDate }),
-        billNumber: order.billNumber || `TH-${Date.now()}`,
-        status: order.status || 'Active',
+        ...( orderId && order.orderDate instanceof Timestamp && { orderDate: order.orderDate }), // Keep original orderDate if editing
+        billNumber: order.billNumber || `TH-${Date.now()}`, // Keep existing or generate new
+        status: order.status || 'Active', // Maintain or default status
       };
 
       // Firestore Logic
@@ -515,31 +620,52 @@ const OrderFormPage = () => {
         let isNewOrder = false;
 
         if (orderId) { // UPDATE
+            const existingOrderDoc = await getDoc(doc(db, orderCollectionPath, orderId));
+            if (!existingOrderDoc.exists()) throw new Error("Order not found for update.");
+            const existingData = existingOrderDoc.data();
+            const existingPaymentHistory = existingData?.payment?.paymentHistory || [];
+
+            // --- Update Handling for Advance/History ---
+            // Keep existing history. Subsequent payments are handled in OrderList page.
+            // Recalculate total paid based on the *existing* history.
+            const totalPaidFromHistory = existingPaymentHistory.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+            dataToSave.payment.advance = totalPaidFromHistory; // 'advance' now means total paid from history
+            dataToSave.payment.pending = dataToSave.payment.total - totalPaidFromHistory;
+            dataToSave.payment.paymentHistory = existingPaymentHistory; // Preserve existing history on update via form
+            // NOTE: The initial advance amount/method might be edited here, but it doesn't add a *new* history entry via the form.
+            // Consider if editing the *first* history entry is needed, but that adds complexity. Let's keep it simple for now.
+
             await updateDoc(doc(db, orderCollectionPath, orderId), dataToSave);
             savedDataForNotification = {
-                id: orderId,
-                ...dataToSave,
+                id: orderId, ...dataToSave,
                 deliveryDate: dataToSave.deliveryDate.toDate(),
-                orderDate: dataToSave.orderDate?.toDate ? dataToSave.orderDate.toDate() : order.orderDate?.toDate ? order.orderDate.toDate() : null
+                orderDate: dataToSave.orderDate?.toDate ? dataToSave.orderDate.toDate() : existingData.orderDate?.toDate ? existingData.orderDate.toDate() : null // Use existing if needed
              };
+
         } else { // CREATE
             isNewOrder = true;
             const batch = writeBatch(db);
             const newOrderRef = doc(collection(db, orderCollectionPath));
             currentOrderId = newOrderRef.id;
-            const finalBillNumber = dataToSave.billNumber;
+            // Use the potentially updated bill number from state
+            const finalBillNumber = dataToSave.billNumber || `TH-${Date.now()}`;
             const finalDataToSave = { ...dataToSave, id: currentOrderId, billNumber: finalBillNumber };
-            currentBillNumber = finalBillNumber;
-            batch.set(newOrderRef, finalDataToSave);
-            if (finalDataToSave.payment.advance > 0) {
+            currentBillNumber = finalBillNumber; // Update for notification/confirmation
+            batch.set(newOrderRef, finalDataToSave); // Save the complete data including initial payment history
+
+            // Add transaction ONLY for the initial advance during CREATION
+            if (finalDataToSave.payment.advance > 0 && finalDataToSave.payment.paymentHistory.length > 0) {
                  const newTransactionRef = doc(collection(db, transactionCollectionPath));
                  batch.set(newTransactionRef, {
-                    date: Timestamp.now(), type: 'Income',
+                    date: finalDataToSave.payment.paymentHistory[0].date, // Use date from history
+                    type: 'Income',
                     description: `Advance for Order ${finalBillNumber}`,
-                    amount: finalDataToSave.payment.advance,
-                    orderRef: currentOrderId
+                    amount: finalDataToSave.payment.advance, // Amount of initial advance
+                    orderRef: currentOrderId, // Link transaction to order
+                    paymentMethod: finalDataToSave.payment.method // Store initial method
                  });
             }
+
             await batch.commit();
             console.log("New order saved with ID:", currentOrderId);
              savedDataForNotification = {
@@ -549,15 +675,17 @@ const OrderFormPage = () => {
             };
         }
 
+        // Send Notification only for new orders
         if (isNewOrder && savedDataForNotification) {
              sendNewOrderNotification(savedDataForNotification);
         }
 
+        // Ask for print confirmation
         if (window.confirm(`Order ${isNewOrder ? 'placed' : 'updated'} successfully! (ID: ${currentBillNumber})\n\nPrint invoice?`)) {
             printInvoice(savedDataForNotification);
         }
 
-        navigate('/orders');
+        navigate('/orders'); // Navigate back to list
 
       } catch (error) { console.error("Error saving order: ", error); alert(`Failed to save order: ${error.message}`); }
       finally { setIsSaving(false); }
@@ -566,10 +694,20 @@ const OrderFormPage = () => {
 
   // Step Navigation
    const nextStep = () => {
-       if (currentStep === 1 && (!order.customer.name || !order.customer.number || !order.deliveryDate)) { alert("Customer Name, Number, and Delivery Date are required."); return; }
+       // Validation before proceeding
+       if (currentStep === 1 && (!order.customer.name || !order.customer.number || !order.deliveryDate)) {
+           alert("Customer Name, Number, and Delivery Date are required.");
+           return;
+       }
        if (currentStep === 2) {
-            const validPeople = order.people?.filter(p => p.name?.trim() && p.items?.some(i => i.name)) || [];
-            if (validPeople.length === 0 || order.people.some(p => !p.name?.trim())) { alert("Each person must have a name and at least one item selected."); return; }
+           // Ensure at least one person exists, each person has a name, and each person has at least one item with a name
+           const isValidStep2 = order.people?.length > 0 &&
+                                order.people.every(p => p.name?.trim()) &&
+                                order.people.every(p => p.items?.some(i => i.name && i.name.trim()));
+           if (!isValidStep2) {
+               alert("Each person must have a name, and at least one item with a name must be selected for each person.");
+               return;
+           }
        }
        setCurrentStep(prev => Math.min(prev + 1, MAX_STEPS));
    };
@@ -584,7 +722,7 @@ const OrderFormPage = () => {
     <div className="pb-10 max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
       {/* Header */}
        <div className="mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <h1 className="text-2xl md:text-3xl font-bold text-[#393E41]">{orderId ? 'Edit Order' : 'Place New Order'}</h1>
+        <h1 className="text-2xl md:text-3xl font-bold text-[#393E41]">{orderId ? `Edit Order (${order.billNumber})` : 'Place New Order'}</h1>
          <Button type="button" onClick={() => navigate('/orders')} variant="secondary" className="w-full md:w-auto text-sm inline-flex items-center gap-1">
              <FiArrowLeft size={16}/> Back to Order List
          </Button>
@@ -604,7 +742,8 @@ const OrderFormPage = () => {
                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
                     <Input label="Customer Name" id="name" name="name" value={order.customer.name || ''} onChange={handleCustomerChange} required autoFocus/>
                     <Input label="Customer Number" id="number" name="number" type="tel" value={order.customer.number || ''} onChange={handleCustomerChange} required/>
-                    <Input label="Delivery Date" id="deliveryDate" name="deliveryDate" type="date" value={order.deliveryDate || ''} onChange={handleCustomerChange} required />
+                    {/* <Input label="Customer Email (Optional)" id="email" name="email" type="email" value={order.customer.email || ''} onChange={handleCustomerChange} /> */}
+                    <Input label="Delivery Date" id="deliveryDate" name="deliveryDate" type="date" value={order.deliveryDate || ''} onChange={handleCustomerChange} required min={new Date().toISOString().split('T')[0]}/> {/* Prevent past dates */}
                 </div>
                  <div className="mt-4">
                     <label htmlFor="notes" className="mb-2 block text-sm font-medium text-[#6C757D]">Order Notes (Optional)</label>
@@ -640,7 +779,8 @@ const OrderFormPage = () => {
                      <div className="space-y-5">
                          {person.items?.map((item, itemIndex) => (
                            <div key={item.id} className="rounded-md border border-[#E0E0E0] p-4 bg-gray-50/50 relative">
-                              {person.items.length > 1 && (
+                              {/* Conditionally show remove button only if there's more than one item OR more than one person */}
+                              {(person.items.length > 1 || order.people.length > 1) && (
                                 <button type="button" onClick={() => handleRemoveItem(personIndex, itemIndex)} className="absolute top-2 right-2 p-1 text-red-500 hover:text-red-700 focus:outline-none focus:ring-1 focus:ring-red-300 rounded-full" aria-label={`Remove Item ${itemIndex + 1}`}>
                                     <FiTrash2 />
                                 </button>
@@ -686,7 +826,7 @@ const OrderFormPage = () => {
                                     </>
                                  ) : item.name ? (
                                      <p className="text-sm text-gray-500 mt-2 italic">No specific measurements required for {item.name}.</p>
-                                 ) : null
+                                 ) : null // Don't show anything if no item is selected
                                 }
                              </div>
 
@@ -696,8 +836,11 @@ const OrderFormPage = () => {
                              </div>
                            </div>
                          ))}
+                         {/* Show add button only if the person has a name */}
+                         {person.name?.trim() && (
+                            <Button type="button" onClick={() => handleAddItem(personIndex)} variant="secondary" className="mt-4 flex items-center gap-2 text-sm"><FiPlusSquare /> Add Item for {person.name || `Person ${personIndex + 1}`}</Button>
+                         )}
                      </div>
-                     <Button type="button" onClick={() => handleAddItem(personIndex)} variant="secondary" className="mt-4 flex items-center gap-2 text-sm"><FiPlusSquare /> Add Item for {person.name || `Person ${personIndex + 1}`}</Button>
                    </Card>
                  ))}
                  <Button type="button" onClick={handleAddPerson} variant="secondary" className="flex items-center gap-2"><FiPlus /> Add Another Person</Button>
@@ -708,17 +851,28 @@ const OrderFormPage = () => {
         {currentStep === 3 && (
              <Card>
                  <h2 className="mb-4 text-xl font-semibold text-[#393E41]">Payment Details & Review</h2>
+                  {/* Review Section */}
                   <div className="mb-6 border-b border-[#E0E0E0] pb-4 space-y-3">
                       <h3 className="text-lg font-medium text-[#393E41] mb-2">Order Summary</h3>
                        <p className="text-sm text-[#6C757D]">Customer: <span className="font-medium text-[#393E41]">{order.customer?.name || 'N/A'}</span> ({order.customer?.number || 'N/A'})</p>
                       <p className="text-sm text-[#6C757D]">Delivery Date: <span className="font-medium text-[#393E41]">{formatDateForDisplay(order.deliveryDate)}</span></p>
                       <div className="text-sm text-[#6C757D]"> Items:
                           <ul className="list-disc pl-5 mt-1">
-                              {order.people?.map((p, pIdx) => ( p.items?.filter(i => i.name).length > 0 && ( <li key={pIdx} className="text-[#393E41] font-medium"> {p.name || `Person ${pIdx + 1}`}: <span className="font-normal text-[#6C757D] ml-2"> {p.items.filter(i => i.name).map(i => `${i.name} (${formatCurrency(i.price)})`).join(', ') || 'No items'} </span> </li> )))}
+                              {order.people?.map((p, pIdx) => (
+                                  p.items?.filter(i => i.name).length > 0 && (
+                                     <li key={pIdx} className="text-[#393E41] font-medium">
+                                         {p.name || `Person ${pIdx + 1}`}:
+                                         <span className="font-normal text-[#6C757D] ml-2">
+                                             {p.items.filter(i => i.name).map(i => `${i.name} (${formatCurrency(i.price)})`).join(', ') || 'No items'}
+                                         </span>
+                                     </li>
+                                  )
+                              ))}
                           </ul>
                       </div>
                   </div>
 
+                  {/* Payment Calculation Sections */}
                   <div className="mb-4"> <label className="mb-1 block text-sm font-medium text-[#6C757D]">Items Subtotal</label> <div className="w-full rounded-md border border-gray-200 bg-gray-100 px-3 py-2 text-[#393E41] font-semibold">{formatCurrency(order.payment?.subtotal)}</div> </div>
 
                   {/* Additional Fees Section */}
@@ -747,10 +901,10 @@ const OrderFormPage = () => {
                                             value={fee.description}
                                             onChange={(e) => handleFeeChange(fee.id, 'manualDescription', e.target.value)}
                                             className="mt-1"
+                                            required // Make manual description required if selected
                                         />
                                     )}
                                 </div>
-                                {/* --- MODIFIED: Removed disabled prop --- */}
                                 <Input
                                     id={`feeAmount-${index}`}
                                     name={`feeAmount-${index}`}
@@ -759,11 +913,10 @@ const OrderFormPage = () => {
                                     placeholder="Amount"
                                     value={fee.amount || ''}
                                     onChange={(e) => handleFeeChange(fee.id, 'amount', e.target.value)}
-                                    min="0"
+                                    min="0" // Allow 0 amount
                                     step="any"
-                                    // disabled={!fee.isManualDescription && fee.description !== ''} // Removed this line
+                                    required // Amount is always required
                                 />
-                                {/* --- MODIFIED: Adjusted button alignment --- */}
                                 <Button
                                     type="button"
                                     onClick={() => handleRemoveFee(fee.id)}
@@ -780,6 +933,7 @@ const OrderFormPage = () => {
                         </Button>
                     </div>
 
+                    {/* Discount Section */}
                     <div className="mb-4 border-t pt-4">
                         <h3 className="text-lg font-medium text-[#393E41] mb-2 flex items-center gap-1"><FiTag /> Discount</h3>
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -789,13 +943,37 @@ const OrderFormPage = () => {
                         </div>
                     </div>
 
+                    {/* Final Payment Section */}
                     <div className="border-t pt-4">
                          <h3 className="text-lg font-medium text-[#393E41] mb-3">Final Payment</h3>
                          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-4">
                             <div> <label className="mb-2 block text-sm font-medium text-[#6C757D]">Grand Total</label> <div className="w-full rounded-md border border-gray-300 bg-gray-100 px-3 py-2 text-xl font-bold text-[#393E41]">{formatCurrency(order.payment?.total)}</div> </div>
-                           <Input label="Advance Paid (₹)" id="advance" name="advance" type="number" value={order.payment?.advance || 0} onChange={handlePaymentChange} min="0" step="any"/>
+                            {/* Input for Initial Advance (disabled if editing) */}
+                           <Input
+                                label="Initial Advance (₹)"
+                                id="advance"
+                                name="advance"
+                                type="number"
+                                value={order.payment?.advance || 0}
+                                onChange={handlePaymentChange}
+                                min="0"
+                                step="any"
+                                disabled={!!orderId} // Disable if editing (subsequent payments via list)
+                                title={orderId ? "Subsequent payments are recorded from the Order List." : ""}
+                            />
                            <div> <label className="mb-2 block text-sm font-medium text-[#6C757D]">Pending Amount</label> <div className={`w-full rounded-md border border-gray-300 bg-gray-100 px-3 py-2 text-xl font-bold ${order.payment?.pending > 0 ? 'text-orange-600' : 'text-green-600'}`}>{formatCurrency(order.payment?.pending)}</div> </div>
-                           <Select label="Payment Method" id="method" name="method" value={order.payment?.method || 'Cash'} onChange={handlePaymentChange}> <option>Cash</option> <option>Online</option> <option>Bank Transfer</option> </Select>
+                           {/* Payment Method for Initial Advance (disabled if editing) */}
+                           <Select
+                                label="Payment Method"
+                                id="method"
+                                name="method"
+                                value={order.payment?.method || 'Cash'}
+                                onChange={handlePaymentChange}
+                                disabled={!!orderId} // Disable if editing
+                                title={orderId ? "Payment method for initial advance." : ""}
+                            >
+                                <option>Cash</option> <option>Online</option> <option>Bank Transfer</option> <option>Other</option>
+                           </Select>
                          </div>
                      </div>
              </Card>
@@ -818,6 +996,6 @@ const OrderFormPage = () => {
   );
 };
 
-OrderFormPage.propTypes = {};
+OrderFormPage.propTypes = {}; // Keep PropTypes empty or define if needed
 
 export default OrderFormPage;

@@ -10,7 +10,7 @@ import logoCollapsed from '../../assets/logo2.svg'; // Assuming logo2.svg is in 
 // --- Icons --- (Using react-icons/fi)
 import {
     FiGrid, FiFileText, FiSettings, FiUsers, FiDollarSign, FiBarChart2,
-    FiChevronsLeft, FiChevronsRight, FiTag, 
+    FiChevronsLeft, FiChevronsRight, FiTag,
 } from 'react-icons/fi';
 
 // Wrapper ensures consistent icon size and centers content vertically
@@ -49,20 +49,19 @@ const Sidebar = ({ isCollapsed, toggleSidebar }) => {
     // Apply dynamic width, handle mobile overlay vs desktop fixed position
     <aside
       className={`fixed inset-y-0 left-0 z-40 flex flex-col border-r border-[#E0E0E0] bg-[#FFFFFF] transition-all duration-300 ease-in-out md:relative md:translate-x-0 ${
-        isCollapsed ? 'w-30 -translate-x-full md:translate-x-0' : 'w-64 translate-x-0'
+        isCollapsed ? 'w-30 md:w-30' : 'w-64' // Adjusted collapsed width for footer
       } flex-shrink-0`} // Manage width and mobile transform
     >
-      {/* Logo Section - Increased container height and logo sizes */}
-       {/* Increased container height to h-20 */}
+      {/* Logo Section */}
        <div className={`flex h-20 flex-shrink-0 items-center px-4 ${isCollapsed ? 'justify-center ' : 'justify-start px-6'}`}>
          {isCollapsed ? (
-           <img src={logoCollapsed} alt="Theron Logo Collapsed" className="h-20 w-auto" /> 
+           <img src={logoCollapsed} alt="Theron Logo Collapsed" className="h-20 w-auto" /> // Slightly smaller collapsed logo maybe
          ) : (
-           <img src={logoExpanded} alt="Theron Logo Expanded" className="h-auto w-45 pt-1 " /> 
+           <img src={logoExpanded} alt="Theron Logo Expanded" className="h-auto w-36 pt-1 " /> // Adjusted expanded logo size
          )}
        </div>
 
-      {/* Navigation Links - Improved Padding & Alignment */}
+      {/* Navigation Links */}
       <nav className="mt-5 flex-1 space-y-2 overflow-y-auto overflow-x-hidden px-4">
         {menuItems
           .filter((item) => item.role.includes(userRole))
@@ -85,8 +84,21 @@ const Sidebar = ({ isCollapsed, toggleSidebar }) => {
           ))}
       </nav>
 
-      {/* Toggle Button at the bottom */}
-      <div className="mt-auto flex-shrink-0 border-t border-[#E0E0E0] p-4">
+      {/* Footer / Trademark */}
+      <div className={`px-4 pb-2 text-center text-xs text-[#6C757D] ${isCollapsed ? 'hidden' : 'block'}`}>
+         Product by{' '}
+         <a
+           href="https://hharryy.com"
+           target="_blank"
+           rel="noopener noreferrer"
+           className="font-medium text-[#44BBA4] hover:underline"
+         >
+           hharryy
+         </a>
+      </div>
+
+      {/* Toggle Button */}
+      <div className="flex-shrink-0 border-t border-[#E0E0E0] p-4">
         <button
           onClick={toggleSidebar}
           className={`group flex w-full items-center rounded-md px-3 py-2.5 text-sm font-medium transition-colors duration-150 ${
@@ -94,7 +106,7 @@ const Sidebar = ({ isCollapsed, toggleSidebar }) => {
           } ${isCollapsed ? 'justify-center' : ''}`}
           aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
-           <span className={`h-5 w-5 flex-shrink-0 ${isCollapsed ? '' : 'mr-3'}`}>
+           <span className={`h-5 w-5 flex-shrink-0 ${isCollapsed ? '' : ''}`}> {/* Removed mr-3 */}
              {isCollapsed ? <FiChevronsRight /> : <FiChevronsLeft />}
            </span>
           {!isCollapsed && <span className="ml-3 truncate flex-grow">Collapse</span>}

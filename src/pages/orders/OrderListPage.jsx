@@ -3,7 +3,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useData } from '../../context/DataContext';
 import { db, getCollectionPath } from '../../firebase';
-import { doc, updateDoc, deleteDoc, collection, query, where, getDocs, writeBatch } from 'firebase/firestore'; // Ensure all needed functions are imported
+import { doc, updateDoc, deleteDoc, collection, query, where, getDocs, writeBatch, Timestamp } from 'firebase/firestore'; // Ensure Timestamp, writeBatch, etc. are imported
 import Button from '../../components/ui/Button';
 import Card from '../../components/ui/Card';
 import Input from '../../components/ui/Input';
@@ -13,8 +13,9 @@ import Select from '../../components/ui/Select';
 
 // --- Icons --- (Using react-icons for consistency)
 import {
-    FiPlus, FiEdit, FiPrinter, FiTrash2, FiFilter, FiX, FiMaximize, // Replaced FiRuler with FiMaximize
-    FiMessageSquare, FiList, FiAlertCircle, FiCalendar, FiScissors, FiPocket // Using FiMessageSquare for notify
+    FiPlus, FiEdit, FiPrinter, FiTrash2, FiFilter, FiX, FiMaximize,
+    FiMessageSquare, FiList, FiAlertCircle, FiCalendar, FiScissors, FiPocket,
+    FiDollarSign, FiSave, FiCreditCard // Added icons for payment
 } from 'react-icons/fi';
 
 const ITEM_STATUS_OPTIONS = ['Received', 'Cutting', 'Sewing', 'Ready for Trial', 'Delivered'];
@@ -94,12 +95,20 @@ const FilterSection = ({ filters, onFilterChange, onResetFilters, itemStatusOpti
 
 // --- Main Component ---
 const OrderListPage = () => {
-    const { orders, ordersLoading, workers } = useData(); // Get workers data
+    const { orders, ordersLoading, workers } = useData();
     const [searchTerm, setSearchTerm] = useState('');
     const [detailModalOrder, setDetailModalOrder] = useState(null);
     const navigate = useNavigate();
     const location = useLocation();
     const [isDeleting, setIsDeleting] = useState(false);
+
+    // --- NEW: State for Payment Modal ---
+    const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+    const [paymentAmount, setPaymentAmount] = useState('');
+    const [paymentMethod, setPaymentMethod] = useState('Cash');
+    const [paymentNotes, setPaymentNotes] = useState('');
+    const [isSavingPayment, setIsSavingPayment] = useState(false);
+    // --- END NEW ---
 
     // Filter State
     const initialFilterState = { status: '', pendingPayment: false, startDate: '', endDate: '' };
@@ -133,12 +142,11 @@ const OrderListPage = () => {
         const lowerSearchTerm = searchTerm.toLowerCase();
         const { status, pendingPayment, startDate, endDate } = filters;
 
-        const start = startDate ? new Date(startDate + 'T00:00:00') : null;
+        // Correct date comparison setup
+        const start = startDate ? new Date(startDate + 'T00:00:00') : null; // Start of the selected day
         let end = null;
         if (endDate) {
-          end = new Date(endDate + 'T00:00:00');
-          end.setDate(end.getDate() + 1); // Move to start of next day
-          end.setMilliseconds(end.getMilliseconds() - 1); // Go back 1ms to end of endDate
+          end = new Date(endDate + 'T23:59:59.999'); // End of the selected day
         }
 
         return orders.filter(order => {
@@ -150,6 +158,7 @@ const OrderListPage = () => {
             const matchesPending = !pendingPayment || (order.payment?.pending || 0) > 0;
 
             const orderDate = order.orderDate?.toDate ? order.orderDate.toDate() : null;
+            // Check if orderDate is a valid date before comparing
             const matchesDate = orderDate instanceof Date && !isNaN(orderDate) &&
                                 (!start || orderDate >= start) &&
                                 (!end || orderDate <= end);
@@ -168,20 +177,24 @@ const OrderListPage = () => {
             const orderIdToOpen = location.state.openOrderDetailsId;
             const orderToOpen = orders.find(order => order.id === orderIdToOpen);
             if (orderToOpen) {
-                // Ensure measurements object exists for all items before setting state
-                const orderWithEnsuredMeasurements = JSON.parse(JSON.stringify(orderToOpen)); // Deep copy
-                orderWithEnsuredMeasurements.people?.forEach(person => {
+                // Ensure measurements object exists and paymentHistory is an array
+                const orderWithDefaults = JSON.parse(JSON.stringify(orderToOpen)); // Deep copy
+                orderWithDefaults.people?.forEach(person => {
                     person.items?.forEach(item => {
-                        if (!item.measurements || typeof item.measurements !== 'object') {
-                            item.measurements = {}; // Initialize if missing or not an object
-                        }
+                        item.measurements = (item.measurements && typeof item.measurements === 'object') ? item.measurements : {};
                     });
                 });
-                setDetailModalOrder(orderWithEnsuredMeasurements);
+                if (orderWithDefaults.payment) {
+                    orderWithDefaults.payment.paymentHistory = Array.isArray(orderWithDefaults.payment.paymentHistory) ? orderWithDefaults.payment.paymentHistory : [];
+                } else {
+                    orderWithDefaults.payment = { paymentHistory: [] }; // Initialize payment object if missing
+                }
+                setDetailModalOrder(orderWithDefaults);
             } else {
                 console.warn(`Order with ID ${orderIdToOpen} not found.`);
             }
-            navigate(location.pathname, { replace: true, state: {} }); // Clear state
+            // Clear the state from navigation history
+            navigate(location.pathname, { replace: true, state: {} });
         }
     }, [location.state, orders, ordersLoading, navigate, location.pathname]);
 
@@ -197,41 +210,68 @@ const OrderListPage = () => {
     // Status Change Handler
     const handleStatusChange = async (personIndex, itemIndex, newStatus) => {
         if (!detailModalOrder) return;
-        const originalOrderState = JSON.parse(JSON.stringify(detailModalOrder));
-        const orderToUpdate = JSON.parse(JSON.stringify(detailModalOrder));
+        const originalOrderState = JSON.parse(JSON.stringify(detailModalOrder)); // Deep copy for revert
+        const orderToUpdate = JSON.parse(JSON.stringify(detailModalOrder)); // Deep copy to modify
 
         try {
             const itemToUpdate = orderToUpdate.people?.[personIndex]?.items?.[itemIndex];
             if (itemToUpdate) {
                 if(itemToUpdate.status === newStatus) return; // No change needed
                 itemToUpdate.status = newStatus;
-                setDetailModalOrder(orderToUpdate); // Optimistic UI update
+
+                // Optimistic UI update
+                setDetailModalOrder(orderToUpdate);
+
+                // Update Firestore
                 await updateDoc(doc(db, getCollectionPath('orders'), detailModalOrder.id), {
                     people: orderToUpdate.people // Update only the 'people' array in Firestore
                 });
                 console.log("Firestore status updated successfully!");
-                // Optionally trigger notification after successful update
-                // handleNotify(orderToUpdate.customer, itemToUpdate, orderToUpdate.billNumber);
-            } else { throw new Error("Invalid item path for status update"); }
-        } catch (error) { console.error("Error updating status:", error); alert("Failed to update status."); setDetailModalOrder(originalOrderState); } // Revert UI on error
+
+            } else {
+                throw new Error("Invalid item path for status update");
+            }
+        } catch (error) {
+            console.error("Error updating status:", error);
+            alert("Failed to update status.");
+            // Revert UI on error
+            setDetailModalOrder(originalOrderState);
+        }
     };
 
     // Worker Assign Handler
     const handleWorkerAssign = async (personIndex, itemIndex, workerType, workerName) => {
         if (!detailModalOrder || (workerType !== 'cutter' && workerType !== 'sewer')) return;
-        const originalOrderState = JSON.parse(JSON.stringify(detailModalOrder));
-        const orderToUpdate = JSON.parse(JSON.stringify(detailModalOrder));
+
+        const originalOrderState = JSON.parse(JSON.stringify(detailModalOrder)); // For revert
+        const orderToUpdate = JSON.parse(JSON.stringify(detailModalOrder)); // To modify
+
         try {
             const itemToUpdate = orderToUpdate.people?.[personIndex]?.items?.[itemIndex];
             if (itemToUpdate) {
                 if (itemToUpdate[workerType] === workerName) return; // No change needed
+
                 itemToUpdate[workerType] = workerName; // Assign the worker name
-                setDetailModalOrder(orderToUpdate); // Optimistic UI update
-                await updateDoc(doc(db, getCollectionPath('orders'), detailModalOrder.id), { people: orderToUpdate.people }); // Update only 'people'
+
+                // Optimistic UI update
+                setDetailModalOrder(orderToUpdate);
+
+                // Update Firestore
+                await updateDoc(doc(db, getCollectionPath('orders'), detailModalOrder.id), {
+                    people: orderToUpdate.people // Update only 'people'
+                });
                 console.log(`Worker ${workerType} assigned successfully.`);
-            } else { throw new Error("Invalid item path for worker assignment"); }
-        } catch (error) { console.error(`Error assigning ${workerType}:`, error); alert(`Failed to assign ${workerType}.`); setDetailModalOrder(originalOrderState); } // Revert UI on error
+            } else {
+                throw new Error("Invalid item path for worker assignment");
+            }
+        } catch (error) {
+            console.error(`Error assigning ${workerType}:`, error);
+            alert(`Failed to assign ${workerType}.`);
+            // Revert UI on error
+            setDetailModalOrder(originalOrderState);
+        }
     };
+
 
     // Notify Handler - Opens WhatsApp
     const handleNotify = (customer, item, orderBillNumber) => {
@@ -254,14 +294,14 @@ const OrderListPage = () => {
         // Enhanced messages
         let statusMessage = '';
         switch(itemStatus) {
-            case 'Cutting': statusMessage = `✨ Good news! '${itemName}' is now being cut.`; break;
-            case 'Sewing': statusMessage = `🧵 Progress update! '${itemName}' has moved to sewing.`; break;
-            case 'Ready for Trial': statusMessage = `🎉 Almost there! '${itemName}' is ready for trial. Please let us know when you'd like to come in.`; break;
-            case 'Delivered': statusMessage = `✅ Your item '${itemName}' has been marked as delivered. We hope you enjoy it!`; break;
-            case 'Received': statusMessage = `👍 Order received! We've started processing '${itemName}'.`; break;
+            case 'Cutting': statusMessage = `*:D Good news!* \n'${itemName}' is now being cut.`; break;
+            case 'Sewing': statusMessage = `*Progress update!* '${itemName}' has moved to sewing.`; break;
+            case 'Ready for Trial': statusMessage = `*Almost there!* '${itemName}' is ready for trial. Please let us know when you'd like to come in.`; break;
+            case 'Delivered': statusMessage = `*√* Your item '${itemName}' has been marked as delivered. We hope you enjoy it!`; break;
+            case 'Received': statusMessage = `👍 *Order received!* We've started processing '${itemName}'.`; break;
             default: statusMessage = `'${itemName}' status is now '${itemStatus}'.`;
         }
-        const message = `Namaste${customerName},\nUpdate from Theron Tailors (Order ${orderId}):\n${statusMessage}\n\nThank you!`;
+        const message = `Namaste *${customerName}*,\nUpdate from Theron Tailors (Order ${orderId}):\n${statusMessage}\n\n*Thank you!*`;
 
         const encodedMessage = encodeURIComponent(message);
         const whatsappUrl = `https://wa.me/${phoneNumber}?text=${encodedMessage}`;
@@ -273,25 +313,36 @@ const OrderListPage = () => {
 
     // Delete Order Handler (Includes Transaction Deletion)
     const handleDeleteOrder = async (orderId, orderBillNumber) => {
-        const confirmMsg = `Delete order "${orderBillNumber || orderId}"? This also removes related advance payments from the ledger. Cannot be undone.`;
+        const confirmMsg = `Delete order "${orderBillNumber || orderId}"? This also removes related income payments from the ledger. Cannot be undone.`;
         if (window.confirm(confirmMsg)) {
             setIsDeleting(true);
             try {
                 const orderPath = getCollectionPath('orders');
                 const transPath = getCollectionPath('transactions');
+                // Query for *all* income transactions linked to this orderRef
                 const transQuery = query(collection(db, transPath), where("orderRef", "==", orderId), where("type", "==", "Income"));
                 const querySnapshot = await getDocs(transQuery);
                 const transDocsToDelete = querySnapshot.docs.map(doc => doc.ref);
 
                 const batch = writeBatch(db);
-                batch.delete(doc(db, orderPath, orderId)); // Delete order
-                transDocsToDelete.forEach(docRef => batch.delete(docRef)); // Delete linked transactions
+                // Delete the order itself
+                batch.delete(doc(db, orderPath, orderId));
+                // Delete all linked income transactions found
+                transDocsToDelete.forEach(docRef => batch.delete(docRef));
 
                 await batch.commit(); // Execute batch
-                console.log(`Order ${orderId} and ${transDocsToDelete.length} related transaction(s) deleted.`);
-                if (detailModalOrder?.id === orderId) setDetailModalOrder(null); // Close modal if open
-            } catch (error) { console.error("Error deleting order:", error); alert("Failed to delete order."); }
-            finally { setIsDeleting(false); }
+                console.log(`Order ${orderId} and ${transDocsToDelete.length} related income transaction(s) deleted.`);
+
+                // Close modal if the deleted order was open
+                if (detailModalOrder?.id === orderId) {
+                    setDetailModalOrder(null);
+                }
+            } catch (error) {
+                console.error("Error deleting order and related transactions:", error);
+                alert("Failed to delete order and/or related payments.");
+            } finally {
+                setIsDeleting(false);
+            }
         }
     };
 
@@ -299,72 +350,182 @@ const OrderListPage = () => {
     // Safely get potentially nested property
     const getOrderField = (obj, keys = []) => {
       for (const key of keys) {
-        // Handle nested keys like 'payment.total'
         const value = key.split('.').reduce((acc, k) => acc?.[k], obj);
         if (value !== undefined && value !== null) return value;
       }
-      return null; // Return null if no key provides a value
+      return null;
     };
     // Format currency
-    const formatCurrency = (amount) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(amount ?? 0); // Use nullish coalescing
+    const formatCurrency = (amount) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(amount ?? 0);
     // Format Firestore Timestamp or Date object to DD/MM/YYYY
     const formatDate = (timestamp) => {
         if (!timestamp) return 'N/A';
         try {
             let dateObj = null;
-            if (typeof timestamp.toDate === 'function') { dateObj = timestamp.toDate(); } // Firestore Timestamp
-            else if (timestamp.seconds) { dateObj = new Date(timestamp.seconds * 1000); } // Handle potential plain object timestamp
-            else if (timestamp instanceof Date && !isNaN(timestamp)) { dateObj = timestamp; } // Already a Date object
-            else if (typeof timestamp === 'string') { // Handle ISO string or similar
-                const parsed = new Date(timestamp.replace(/-/g, '/')); // Help parsing non-standard formats
+            if (typeof timestamp.toDate === 'function') { dateObj = timestamp.toDate(); }
+            else if (timestamp.seconds) { dateObj = new Date(timestamp.seconds * 1000); }
+            else if (timestamp instanceof Date && !isNaN(timestamp)) { dateObj = timestamp; }
+            else if (typeof timestamp === 'string') {
+                const parsed = new Date(timestamp.replace(/-/g, '/'));
                 if (!isNaN(parsed)) dateObj = parsed;
             }
             if (!dateObj || isNaN(dateObj)) return 'N/A';
             return dateObj.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
         } catch (error) { console.error('Date formatting failed:', error, timestamp); return 'N/A'; }
     };
+     // --- NEW: Helper to format date/time ---
+     const formatDateTime = (timestamp) => {
+        if (!timestamp) return 'N/A';
+        try {
+            let dateObj = null;
+            if (typeof timestamp.toDate === 'function') { dateObj = timestamp.toDate(); }
+            else if (timestamp.seconds) { dateObj = new Date(timestamp.seconds * 1000); }
+            else if (timestamp instanceof Date && !isNaN(timestamp)) { dateObj = timestamp; }
+            else if (typeof timestamp === 'string') {
+                const parsed = new Date(timestamp.replace(/-/g, '/'));
+                if (!isNaN(parsed)) dateObj = parsed;
+            }
+            if (!dateObj || isNaN(dateObj)) return 'N/A';
+            // Format example: 26 Oct 2025, 14:30
+            return dateObj.toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        } catch (error) { console.error('DateTime formatting failed:', error, timestamp); return 'N/A'; }
+    };
+
 
     // --- PRINT INVOICE HANDLER ---
     const handlePrintInvoice = () => {
         if (!detailModalOrder) return;
-        const invoiceContentElement = document.getElementById('printable-invoice');
-        if (!invoiceContentElement) return;
+        // Logic remains the same as previous version...
         const printWindow = window.open('', '_blank', 'height=800,width=800');
         if (!printWindow) { alert("Please allow popups for printing."); return; }
 
         const orderDateFormatted = formatDate(detailModalOrder.orderDate);
         const deliveryDateFormatted = formatDate(detailModalOrder.deliveryDate);
-        // Print-specific CSS (condensed)
         const printStyles = `@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');body{font-family:'Inter',sans-serif;margin:20px;line-height:1.5;color:#333;font-size:10pt}h2,h3,h4,h5{margin:0 0 .5em 0;padding:0;line-height:1.3;color:#393E41}p{margin:0 0 .3em 0}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border-bottom:1px solid #eee;padding:.4em .5em;text-align:left;vertical-align:top}th{background-color:#f8f9fa;font-weight:600;font-size:.9em;text-transform:uppercase;color:#6C757D}td:last-child,th:last-child{text-align:right}strong{font-weight:600}.invoice-header{text-align:center;margin-bottom:1.5em;border-bottom:2px solid #eee;padding-bottom:1em}.invoice-header h2{font-size:1.8em;font-weight:700;color:#44BBA4;margin-bottom:.1em}.invoice-header p{font-size:.85em;color:#555}.details-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.5em;margin-bottom:1.5em;padding-bottom:1em;border-bottom:1px dashed #ccc}.details-grid h5{font-size:1em;font-weight:600;color:#44BBA4;margin-bottom:.5em;border-bottom:1px solid #eee;padding-bottom:.3em}.details-grid p{font-size:.9em;color:#555}.items-section h3{font-size:1.1em;font-weight:600;margin-bottom:.5em}.item-notes{font-size:.8em;color:#666;font-style:italic;padding-left:1em;margin-top:.2em}.totals-section{display:flex;justify-content:flex-end;margin-top:1.5em;padding-top:1em;border-top:2px solid #eee}.totals-box{width:100%;max-width:280px;font-size:.9em}.totals-box div{display:flex;justify-content:space-between;margin-bottom:.3em}.totals-box span:first-child{color:#555;padding-right:1em}.totals-box span:last-child{font-weight:600;color:#333;min-width:80px;text-align:right;font-family:monospace}.totals-box .grand-total span{font-weight:700;font-size:1.1em;color:#393E41}.totals-box .due span:last-child{color:#D97706}.footer{margin-top:2em;text-align:center;font-size:.8em;color:#888;border-top:1px dashed #ccc;padding-top:.8em}.no-print,.no-print-invoice,.measurement-section-for-print{display:none!important}`;
         const orderData = detailModalOrder;
         const validPeopleForPrint = orderData.people?.filter(p => p.name && p.items?.some(i => i.name)) || [];
         const additionalFees = orderData.payment?.additionalFees || [];
-        // Generate Invoice HTML
-        const invoiceHTML = `<div class="invoice-header"><h2>THERON Tailors</h2><p>Order Slip / Invoice</p><p>Order ID: <strong>${orderData.billNumber || 'N/A'}</strong></p></div><div class="details-grid"><div><h5>Customer Details:</h5><p>Name: ${orderData.customer?.name || 'N/A'}</p><p>Phone: ${orderData.customer?.number || 'N/A'}</p></div><div><h5>Order Dates:</h5><p>Order Date: ${orderDateFormatted}</p><p>Delivery Date: ${deliveryDateFormatted}</p></div></div><div class="items-section"><h3>Order Items</h3><table><thead><tr><th>#</th><th>Person</th><th>Item</th><th>Price</th></tr></thead><tbody>${validPeopleForPrint.flatMap((person, pIdx) => person.items.map((item, iIdx) => `<tr><td>${pIdx * (person.items?.length || 0) + iIdx + 1}</td><td>${person.name || `Person ${pIdx + 1}`}</td><td> ${item.name || 'N/A'} ${item.notes ? `<div class="item-notes">Notes: ${item.notes}</div>` : ''} </td><td>${formatCurrency(item.price)}</td></tr>`)).join('')}</tbody></table></div><div class="totals-section"><div class="totals-box"><div><span>Subtotal:</span> <span>${formatCurrency(orderData.payment?.subtotal)}</span></div> ${additionalFees.map(fee => `<div><span>${fee.description || 'Additional Fee'}:</span> <span>${formatCurrency(fee.amount)}</span></div>`).join('')} ${orderData.payment?.calculatedDiscount > 0 ? `<div><span>Discount (${orderData.payment?.discountType === 'percent' ? `${orderData.payment?.discountValue}%` : 'Fixed'}):</span> <span>-${formatCurrency(orderData.payment?.calculatedDiscount)}</span></div>` : ''} <div class="grand-total" style="border-top: 1px solid #ccc; padding-top: 0.3em; margin-top: 0.3em;"><span>Grand Total:</span> <span>${formatCurrency(orderData.payment?.total)}</span></div><div><span>Advance Paid (${orderData.payment?.method || 'N/A'}):</span> <span>${formatCurrency(orderData.payment?.advance)}</span></div><div class="due"><span>Amount Due:</span> <span>${formatCurrency(orderData.payment?.pending)}</span></div></div></div> ${orderData.notes ? `<div style="margin-top: 1.5em; border-top: 1px dashed #ccc; padding-top: 1em;"><h5 style="font-size: 1em; margin-bottom: 0.3em;">Order Notes:</h5><p style="font-size: 0.85em; white-space: pre-wrap;">${orderData.notes}</p></div>` : ''} <div class="footer">Thank you!</div>`;
+        const paymentHistory = orderData.payment?.paymentHistory || []; // Get payment history
+
+        // Update payment summary section in invoiceHTML to show history
+        const invoiceHTML = `<div class="invoice-header"><h2>THERON Tailors</h2><p>Order Slip / Invoice</p><p>Order ID: <strong>${orderData.billNumber || 'N/A'}</strong></p></div><div class="details-grid"><div><h5>Customer Details:</h5><p>Name: ${orderData.customer?.name || 'N/A'}</p><p>Phone: ${orderData.customer?.number || 'N/A'}</p></div><div><h5>Order Dates:</h5><p>Order Date: ${orderDateFormatted}</p><p>Delivery Date: ${deliveryDateFormatted}</p></div></div><div class="items-section"><h3>Order Items</h3><table><thead><tr><th>#</th><th>Person</th><th>Item</th><th>Price</th></tr></thead><tbody>${validPeopleForPrint.flatMap((person, pIdx) => person.items.map((item, iIdx) => `<tr><td>${pIdx * (person.items?.length || 0) + iIdx + 1}</td><td>${person.name || `Person ${pIdx + 1}`}</td><td> ${item.name || 'N/A'} ${item.notes ? `<div class="item-notes">Notes: ${item.notes}</div>` : ''} </td><td>${formatCurrency(item.price)}</td></tr>`)).join('')}</tbody></table></div><div class="totals-section"><div class="totals-box"><div><span>Subtotal:</span> <span>${formatCurrency(orderData.payment?.subtotal)}</span></div> ${additionalFees.map(fee => `<div><span>${fee.description || 'Additional Fee'}:</span> <span>${formatCurrency(fee.amount)}</span></div>`).join('')} ${orderData.payment?.calculatedDiscount > 0 ? `<div><span>Discount (${orderData.payment?.discountType === 'percent' ? `${orderData.payment?.discountValue}%` : 'Fixed'}):</span> <span>-${formatCurrency(orderData.payment?.calculatedDiscount)}</span></div>` : ''} <div class="grand-total" style="border-top: 1px solid #ccc; padding-top: 0.3em; margin-top: 0.3em;"><span>Grand Total:</span> <span>${formatCurrency(orderData.payment?.total)}</span></div><div><span>Total Paid:</span> <span>${formatCurrency(orderData.payment?.advance)}</span></div><div class="due"><span>Amount Due:</span> <span>${formatCurrency(orderData.payment?.pending)}</span></div></div></div> ${paymentHistory.length > 0 ? `<div style="margin-top: 1.5em; border-top: 1px dashed #ccc; padding-top: 1em;"><h5 style="font-size: 1em; margin-bottom: 0.3em;">Payment History:</h5><ul style="font-size:0.85em; padding-left: 1em; list-style:none;">${paymentHistory.map(p => `<li>${formatDateTime(p.date)} - ${formatCurrency(p.amount)} (${p.method})${p.notes ? ` - ${p.notes}` : ''}</li>`).join('')}</ul></div>` : ''} ${orderData.notes ? `<div style="margin-top: 1.5em; border-top: 1px dashed #ccc; padding-top: 1em;"><h5 style="font-size: 1em; margin-bottom: 0.3em;">Order Notes:</h5><p style="font-size: 0.85em; white-space: pre-wrap;">${orderData.notes}</p></div>` : ''} <div class="footer">Thank you!</div>`;
 
         printWindow.document.write(`<html><head><title>Invoice: ${orderData.billNumber || 'Order'}</title><style>${printStyles}</style></head><body>${invoiceHTML}</body></html>`);
         printWindow.document.close();
         printWindow.focus();
-        // Delay print slightly to ensure styles apply
         setTimeout(() => { printWindow.print(); printWindow.close(); }, 300);
     };
 
     // Print Measurements Handler
     const handlePrintMeasurements = (personName, item) => {
+        // Logic remains the same...
         if (!item || !item.measurements || typeof item.measurements !== 'object') { alert('No measurements available.'); return; }
         const measurementEntries = Object.entries(item.measurements).filter(([, value]) => value && String(value).trim());
         if (measurementEntries.length === 0) { alert('No measurements recorded.'); return; }
-        const printWindow = window.open('', '_blank', 'height=600,width=400'); // Slightly larger height
+        const printWindow = window.open('', '_blank', 'height=600,width=400');
         if (!printWindow) { alert("Please allow popups for printing."); return; }
-        // Simple, clean styles for measurements
         const measurementStyles = `body{font-family:monospace;margin:10px;font-size:12px;line-height:1.6} h3{font-size:14px;font-weight:bold;margin:15px 0 8px 0;text-transform:uppercase;border-top:1px dashed #333;padding-top:8px} p{font-size:11px;margin:0 0 8px 0} strong{font-weight:bold} ul{list-style:none;padding:0;margin:0 0 10px 0} li{display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;border-bottom:1px dotted #ccc;padding-bottom:4px} li span:first-child{padding-right:15px;flex-shrink:0;color:#555} li span:last-child{font-weight:bold;text-align:right} .header-info{margin-bottom:12px;border-bottom:1px dashed #333;padding-bottom:8px}`;
         const measurementHTML = `<h3>${item.name || 'Item'} Measurements</h3><div class="header-info"><p><strong>Order:</strong> ${detailModalOrder?.billNumber || 'N/A'}</p><p><strong>Customer:</strong> ${detailModalOrder?.customer?.name || 'N/A'}</p><p><strong>Person:</strong> ${personName || 'N/A'}</p></div><ul> ${measurementEntries.map(([key, value]) => `<li><span>${key}:</span> <span>${value}</span></li>`).join('')} </ul>`;
-
         printWindow.document.write(`<html><head><title>Measurements: ${item.name}</title><style>${measurementStyles}</style></head><body>${measurementHTML}</body></html>`);
         printWindow.document.close();
         printWindow.focus();
         setTimeout(() => { printWindow.print(); printWindow.close(); }, 250);
     };
+
+    // --- NEW: Payment Modal Handlers ---
+    const handleOpenPaymentModal = () => {
+        if (!detailModalOrder) return;
+        const pending = detailModalOrder.payment?.pending || 0;
+        setPaymentAmount(pending > 0 ? pending.toString() : '');
+        setPaymentMethod('Cash');
+        setPaymentNotes('');
+        setIsPaymentModalOpen(true);
+    };
+
+    const handleClosePaymentModal = () => {
+        setIsPaymentModalOpen(false);
+        setIsSavingPayment(false); // Reset saving state
+    };
+
+    const handleSaveOrderPayment = async (e) => {
+        e.preventDefault();
+        if (!detailModalOrder || isSavingPayment) return;
+        const amount = Number(paymentAmount);
+        if (isNaN(amount) || amount <= 0) {
+            alert('Please enter a valid positive payment amount.');
+            return;
+        }
+        const currentPending = detailModalOrder.payment?.pending || 0;
+        if (amount > currentPending + 0.01) { // Add small tolerance for floating point
+            if (!window.confirm(`Payment amount (${formatCurrency(amount)}) slightly exceeds pending amount (${formatCurrency(currentPending)}). Proceed anyway?`)) {
+                return;
+            }
+        }
+
+        setIsSavingPayment(true);
+        try {
+            const orderPath = getCollectionPath('orders');
+            const transactionPath = getCollectionPath('transactions');
+            const orderDocRef = doc(db, orderPath, detailModalOrder.id);
+
+            const newPaymentRecord = {
+                date: Timestamp.now(),
+                amount: amount,
+                method: paymentMethod,
+                notes: paymentNotes.trim() || 'Payment Received' // Default note
+            };
+
+            // Get current history and calculate new totals
+            const currentPaymentHistory = detailModalOrder.payment?.paymentHistory || [];
+            const updatedPaymentHistory = [...currentPaymentHistory, newPaymentRecord];
+            const newTotalPaid = updatedPaymentHistory.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+            const orderTotal = detailModalOrder.payment?.total || 0;
+            const newPending = Math.max(0, parseFloat((orderTotal - newTotalPaid).toFixed(2))); // Ensure pending isn't negative, handle floating point
+
+            const batch = writeBatch(db);
+
+            // 1. Update the order document
+            batch.update(orderDocRef, {
+                'payment.advance': newTotalPaid, // 'advance' now represents total paid
+                'payment.pending': newPending,
+                'payment.paymentHistory': updatedPaymentHistory
+            });
+
+            // 2. Add a corresponding transaction record
+            const newTransactionRef = doc(collection(db, transactionPath));
+            batch.set(newTransactionRef, {
+                date: newPaymentRecord.date, // Use the same timestamp
+                type: 'Income',
+                description: `Payment for Order ${detailModalOrder.billNumber}`,
+                amount: amount,
+                orderRef: detailModalOrder.id, // Link to the order
+                paymentMethod: paymentMethod,
+                notes: paymentNotes.trim()
+            });
+
+            await batch.commit();
+
+            // Optimistically update the local state for the modal
+            setDetailModalOrder(prev => ({
+                ...prev,
+                payment: {
+                    ...(prev?.payment || {}),
+                    advance: newTotalPaid,
+                    pending: newPending,
+                    paymentHistory: updatedPaymentHistory
+                }
+            }));
+
+            handleClosePaymentModal(); // Close modal on success
+
+        } catch (error) {
+            console.error("Error saving payment:", error);
+            alert(`Failed to save payment: ${error.message}`);
+        } finally {
+            setIsSavingPayment(false);
+        }
+    };
+    // --- END NEW Payment Modal Handlers ---
 
 
     // --- RENDER ---
@@ -424,6 +585,7 @@ const OrderListPage = () => {
                             Showing {filteredOrders.length} of {orders?.length || 0} orders
                         </div>
                         <table className="w-full min-w-[768px] text-left text-sm">
+                            {/* ... Table Head ... */}
                             <thead className="border-b-2 border-[#E0E0E0] bg-gray-50">
                                 <tr>
                                     <th className="px-4 py-3 font-semibold uppercase text-[#6C757D] tracking-wider">Order ID</th>
@@ -440,8 +602,7 @@ const OrderListPage = () => {
                                         <td className="px-4 py-3 font-mono text-[#393E41]">{order.billNumber || 'N/A'}</td>
                                         <td className="px-4 py-3 font-medium text-[#393E41]">
                                             {order.customer?.name || 'N/A'}
-                                            <br/>
-                                            <span className="text-[#6C757D] text-xs">{order.customer?.number || ''}</span>
+                                            {order.customer?.number && <><br/><span className="text-[#6C757D] text-xs">{order.customer.number}</span></>}
                                         </td>
                                         <td className="px-4 py-3 text-[#393E41] whitespace-nowrap">{formatDate(order.deliveryDate)}</td>
                                         <td className="px-4 py-3 text-right font-mono text-[#393E41]">{formatCurrency(order.payment?.total)}</td>
@@ -450,14 +611,23 @@ const OrderListPage = () => {
                                         </td>
                                         <td className="px-4 py-3">
                                             <div className="flex justify-center items-center gap-1.5">
+                                                {/* Details Button - Ensure clean data */}
                                                 <Button
-                                                    onClick={() => setDetailModalOrder(JSON.parse(JSON.stringify(order)))}
+                                                    onClick={() => {
+                                                        const cleanOrder = JSON.parse(JSON.stringify(order));
+                                                        // Ensure defaults on open
+                                                        cleanOrder.people?.forEach(p => p.items?.forEach(i => i.measurements = i.measurements || {}));
+                                                        cleanOrder.payment = cleanOrder.payment || {};
+                                                        cleanOrder.payment.paymentHistory = Array.isArray(cleanOrder.payment.paymentHistory) ? cleanOrder.payment.paymentHistory : [];
+                                                        setDetailModalOrder(cleanOrder);
+                                                    }}
                                                     variant="secondary"
                                                     className="px-2 py-1 text-xs flex items-center gap-1"
                                                     title="View Details"
                                                 >
                                                      <FiList/> Details
                                                 </Button>
+                                                {/* Edit Button */}
                                                 <Button
                                                     onClick={() => navigate(`/orders/edit/${order.id}`)}
                                                     variant="secondary"
@@ -467,6 +637,7 @@ const OrderListPage = () => {
                                                 >
                                                     <FiEdit />
                                                 </Button>
+                                                {/* Delete Button */}
                                                 <Button
                                                     onClick={() => handleDeleteOrder(order.id, order.billNumber)}
                                                     variant="danger"
@@ -491,16 +662,22 @@ const OrderListPage = () => {
 
             {/* Order Detail Modal */}
             <Modal isOpen={!!detailModalOrder} onClose={() => setDetailModalOrder(null)} title={`Order Details: ${detailModalOrder?.billNumber || ''}`}>
-                <div className="max-h-[calc(100vh-14rem)] overflow-y-auto pr-3">
-                    <div id="printable-invoice">
+                <div className="max-h-[calc(100vh-14rem)] overflow-y-auto pr-3"> {/* Scrollable content */}
+                    <div id="printable-invoice"> {/* Content to potentially print */}
                         {/* Details Grid */}
                         <div className="grid grid-cols-2 gap-4 mb-4 border-b pb-4 details-grid">
-                            <div> <h5 className="font-semibold text-[#393E41]">Customer:</h5> <p>{detailModalOrder?.customer?.name}</p> <p>{detailModalOrder?.customer?.number}</p> </div>
-                            <div> <h5 className="font-semibold text-[#393E41]">Dates:</h5>
+                            <div>
+                                <h5 className="font-semibold text-[#393E41]">Customer:</h5>
+                                <p>{detailModalOrder?.customer?.name}</p>
+                                <p>{detailModalOrder?.customer?.number}</p>
+                            </div>
+                            <div>
+                                <h5 className="font-semibold text-[#393E41]">Dates:</h5>
                                 <p>Order: {formatDate(getOrderField(detailModalOrder, ['orderDate']))}</p>
                                 <p>Delivery: {formatDate(getOrderField(detailModalOrder, ['deliveryDate']))}</p>
                             </div>
                         </div>
+
                         {/* Items List Section */}
                         <div className="space-y-4 items-section">
                              <h4 className="text-lg font-semibold text-[#393E41] mb-2">Items & Status</h4>
@@ -523,12 +700,12 @@ const OrderListPage = () => {
                                                         disabled={!item.measurements || Object.values(item.measurements).every(v => !v)}
                                                         aria-label={`Print measurements for ${item.name}`}
                                                     >
-                                                        <FiMaximize size={14}/> Print Meas. {/* Using FiMaximize */}
+                                                        <FiMaximize size={14}/> Print Meas.
                                                     </Button>
                                                 </div>
                                             </div>
-                                            {/* Measurement Section */}
-                                            <div className="measurement-section-for-print text-xs text-[#6C757D] mt-2">
+                                            {/* Measurement Section (Only visible on screen) */}
+                                            <div className="measurement-section-for-print text-xs text-[#6C757D] mt-2 no-print">
                                                 {item.measurements && typeof item.measurements === 'object' && Object.values(item.measurements).some(v => v) ? (
                                                     <>
                                                     <strong className="text-[#393E41] font-medium block mb-1">Measurements:</strong>
@@ -580,17 +757,20 @@ const OrderListPage = () => {
                                                     className="px-2.5 py-1 text-xs flex items-center gap-1"
                                                     title={!detailModalOrder.customer?.number ? "Customer number missing" : `Send status update via WhatsApp`}
                                                 >
-                                                     <FiMessageSquare size={14}/> Notify {/* Changed Icon */}
+                                                     <FiMessageSquare size={14}/> Notify
                                                 </Button>
                                             </div>
                                         </div>
                                     ))}
+                                    {/* Handle case where a person might have no items */}
                                     {!person.items?.length && <p className="text-sm text-[#6C757D]">No items for this person.</p>}
                                 </div>
                             ))}
-                            {!detailModalOrder?.people?.length && <p className="text-center text-[#6C757D]">No people or items found.</p>}
+                            {/* Handle case where an order might have no people */}
+                            {!detailModalOrder?.people?.length && <p className="text-center text-[#6C757D]">No people or items found in this order.</p>}
                         </div>
-                        {/* Payment Summary */}
+
+                        {/* Payment Summary - Updated */}
                         <div className="mt-6 border-t pt-4 payment-summary">
                             <h5 className="text-lg font-semibold text-[#393E41]">Payment Summary</h5>
                             <div className="flex justify-end mt-2 text-sm">
@@ -599,11 +779,55 @@ const OrderListPage = () => {
                                     {(detailModalOrder?.payment?.additionalFees || []).map((fee, idx) => ( <div key={idx} className="flex justify-between"> <span className="text-[#6C757D]">{fee.description || 'Fee'}:</span> <span className="font-mono text-[#393E41]">{formatCurrency(fee.amount)}</span> </div> ))}
                                     {detailModalOrder?.payment?.calculatedDiscount > 0 && ( <div className="flex justify-between"> <span className="text-[#6C757D]">Discount:</span> <span className="font-mono text-green-600">-{formatCurrency(detailModalOrder?.payment?.calculatedDiscount)}</span> </div> )}
                                     <div className="flex justify-between font-bold border-t pt-1 mt-1 grand-total"> <span className="text-[#393E41]">Total:</span> <span className="font-mono text-[#393E41]">{formatCurrency(detailModalOrder?.payment?.total)}</span> </div>
-                                    <div className="flex justify-between"> <span className="text-[#6C757D]">Advance ({detailModalOrder?.payment?.method || 'N/A'}):</span> <span className="font-mono text-[#393E41]">{formatCurrency(detailModalOrder?.payment?.advance)}</span> </div>
+                                    {/* Updated Label */}
+                                    <div className="flex justify-between"> <span className="text-[#6C757D]">Total Paid:</span> <span className="font-mono text-[#393E41]">{formatCurrency(detailModalOrder?.payment?.advance)}</span> </div>
                                     <div className="flex justify-between font-semibold text-base border-t pt-1 mt-1 due"> <span className="text-[#393E41]">Due:</span> <span className={`font-mono ${detailModalOrder?.payment?.pending > 0 ? 'text-orange-600' : 'text-green-600'}`}>{formatCurrency(detailModalOrder?.payment?.pending)}</span> </div>
                                 </div>
                             </div>
+                            {/* Record Payment Button */}
+                            <div className="mt-4 text-right no-print">
+                                <Button
+                                    onClick={handleOpenPaymentModal}
+                                    variant="primary"
+                                    size="sm"
+                                    className="inline-flex items-center gap-1.5"
+                                    disabled={!detailModalOrder || detailModalOrder?.payment?.pending <= 0} // Disable if no order or fully paid
+                                >
+                                    <FiDollarSign size={14}/> Record Payment
+                                </Button>
+                            </div>
                         </div>
+
+                        {/* Payment History Section */}
+                        <div className="mt-6 border-t pt-4 payment-history">
+                            <h5 className="text-lg font-semibold text-[#393E41] mb-2 flex items-center gap-2 no-print"><FiCreditCard/> Payment History</h5>
+                            {(detailModalOrder?.payment?.paymentHistory && detailModalOrder.payment.paymentHistory.length > 0) ? (
+                                <table className="w-full text-left text-xs border-collapse no-print">
+                                    <thead>
+                                        <tr className="border-b bg-gray-50">
+                                            <th className="py-1 px-2">Date & Time</th>
+                                            <th className="py-1 px-2">Method</th>
+                                            <th className="py-1 px-2">Notes</th>
+                                            <th className="py-1 px-2 text-right">Amount</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {/* Sort history newest first for display */}
+                                        {[...(detailModalOrder.payment.paymentHistory)].sort((a,b) => (b.date?.toMillis() || 0) - (a.date?.toMillis() || 0)).map((p, index) => (
+                                            <tr key={index} className="border-b">
+                                                <td className="py-1 px-2 whitespace-nowrap">{formatDateTime(p.date)}</td>
+                                                <td className="py-1 px-2">{p.method}</td>
+                                                <td className="py-1 px-2 italic">{p.notes}</td>
+                                                <td className="py-1 px-2 text-right font-mono">{formatCurrency(p.amount)}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            ) : (
+                                <p className="text-sm text-center text-[#6C757D] py-4 no-print">No payment history recorded yet.</p>
+                            )}
+                        </div>
+
                     </div> {/* End #printable-invoice */}
                 </div> {/* End Scrollable Wrapper */}
 
@@ -612,10 +836,65 @@ const OrderListPage = () => {
                      <Button type="button" onClick={handlePrintInvoice} variant="secondary" className="flex items-center gap-2"> <FiPrinter /> Print Invoice </Button>
                      <Button type="button" onClick={() => setDetailModalOrder(null)} variant="primary"> Close </Button>
                  </div>
+            </Modal> {/* End Order Detail Modal */}
+
+            {/* Add Payment Modal */}
+            <Modal isOpen={isPaymentModalOpen} onClose={handleClosePaymentModal} title={`Record Payment for Order ${detailModalOrder?.billNumber || ''}`}>
+                <form onSubmit={handleSaveOrderPayment} className="space-y-4">
+                     <div className="text-sm p-3 bg-gray-50 rounded border border-gray-200">
+                        <p>Total Order Amount: <span className="font-semibold">{formatCurrency(detailModalOrder?.payment?.total)}</span></p>
+                        <p>Currently Paid: <span className="font-semibold">{formatCurrency(detailModalOrder?.payment?.advance)}</span></p>
+                        <p>Amount Pending: <span className="font-semibold text-orange-600">{formatCurrency(detailModalOrder?.payment?.pending)}</span></p>
+                     </div>
+                    <Input
+                        id="paymentAmount"
+                        name="paymentAmount"
+                        label="Amount Received (₹)"
+                        type="number"
+                        value={paymentAmount}
+                        onChange={(e) => setPaymentAmount(e.target.value)}
+                        required
+                        min="0.01"
+                        step="0.01"
+                        placeholder="Enter amount"
+                        autoFocus
+                    />
+                     <Select
+                        id="paymentMethod"
+                        name="paymentMethod"
+                        label="Payment Method"
+                        value={paymentMethod}
+                        onChange={(e) => setPaymentMethod(e.target.value)}
+                    >
+                        <option>Cash</option>
+                        <option>Online</option>
+                        <option>Bank Transfer</option>
+                        <option>Other</option>
+                    </Select>
+                     <Input
+                        id="paymentNotes"
+                        name="paymentNotes"
+                        label="Notes (Optional)"
+                        value={paymentNotes}
+                        onChange={(e) => setPaymentNotes(e.target.value)}
+                        placeholder="e.g., Final payment, Second installment"
+                    />
+                    <div className="flex justify-end gap-3 pt-4 border-t mt-4">
+                        <Button type="button" onClick={handleClosePaymentModal} variant="secondary" disabled={isSavingPayment}>
+                            Cancel
+                        </Button>
+                        <Button type="submit" variant="primary" disabled={isSavingPayment || !paymentAmount || Number(paymentAmount) <= 0} className="inline-flex items-center gap-2">
+                           <FiSave/> {isSavingPayment ? "Saving..." : "Save Payment"}
+                        </Button>
+                    </div>
+                </form>
             </Modal>
-        </div>
+
+        </div> // End main container div
     );
 };
 
-export default OrderListPage;
+// Define PropTypes if needed, otherwise leave empty or remove
+OrderListPage.propTypes = {};
 
+export default OrderListPage;
