@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { auth } from '../firebase';
-import Card from '../components/ui/Card';
+// We no longer need the generic Card component, as this is a custom layout
 import Input from '../components/ui/Input';
 import Button from '../components/ui/Button';
+import logo1 from '../assets/logo1.svg'; // Correct import from assets
 
 const LoginPage = () => {
-  // Demo credentials - CHANGE FOR PRODUCTION or remove defaults
+  // Demo credentials
   const [email, setEmail] = useState('owner@business.com');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -14,14 +15,13 @@ const LoginPage = () => {
 
   const handleLogin = async (e) => {
     e.preventDefault();
-    setError(''); // Clear previous errors
+    setError('');
     setLoading(true);
     try {
       await signInWithEmailAndPassword(auth, email, password);
-      // Redirect is handled automatically by PrivateRoute/PublicRoute via AuthContext state change
+      // Redirect is handled automatically
     } catch (err) {
       console.error("Login failed:", err.code, err.message);
-      // Provide more user-friendly error messages based on Firebase error codes
       let message = 'Login failed. Please check credentials.';
       if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
         message = 'Invalid email or password.';
@@ -32,46 +32,72 @@ const LoginPage = () => {
       }
       setError(message);
     } finally {
-      setLoading(false); // Ensure loading stops whether success or fail
+      setLoading(false);
     }
   };
 
+  // --- NEW: Artwork Image ---
+  const imageUrl = 'https://images.pexels.com/photos/4621910/pexels-photo-4621910.jpeg';
+
   return (
-    // DIRECTLY APPLIED THEME: Light off-white bg, Teal logo, Medium Gray text
-    <div className="flex min-h-screen flex-col items-center justify-center bg-[#F8F9FA] p-4">
-      <div className="mb-8 text-center">
-        <h1 className="text-4xl sm:text-5xl font-bold tracking-wider text-[#44BBA4]">THERON</h1>
-        <p className="mt-2 text-[#6C757D]">Tailoring Business Management</p>
+    // Full-screen container to center the card
+    <div className="flex min-h-screen items-center justify-center bg-[#F8F9FA] p-4">
+      
+      {/* Main Card: shadow, rounded, and overflow-hidden are key */}
+      <div className="flex w-full max-w-4xl overflow-hidden rounded-lg bg-white shadow-md flex-col md:flex-row">
+        
+        {/* Column 1: Image (Left on desktop, Top on mobile) */}
+        <div 
+          className="h-64 w-full bg-cover bg-center md:h-auto md:w-5/12"
+          style={{ backgroundImage: `url(${imageUrl})` }}
+          role="img"
+          aria-label="A flat lay of tailoring equipment"
+        >
+          {/* This div is purely for the background image */}
+        </div>
+
+        {/* Column 2: Form (Right on desktop, Bottom on mobile) */}
+        <div className="w-full p-8 md:w-7/12 lg:p-12">
+          
+          {/* Logo */}
+          <div className="mb-8 text-center">
+            <img 
+              src= {logo1} 
+              alt="Logo" 
+              className="mx-auto h-auto w-52" // Changed w-50 to w-52 (Tailwind class)
+            />
+          </div>
+          
+          {/* Form - Removed the negative margin `mt-{-30}` */}
+          <form onSubmit={handleLogin} className="space-y-5">
+            
+            <Input
+              id="email"
+              type="email"
+              label="Email Address"
+              value={email}
+              // --- FIX was here: e.targe.value -> e.target.value ---
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              autoComplete="email"
+            />
+            <Input
+              id="password"
+              type="password"
+              label="Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              autoComplete="current-password"
+            />
+            {error && <p className="text-sm text-center text-red-600">{error}</p>}
+            <Button type="submit" variant="primary" className="w-full !mt-6" disabled={loading}>
+              {loading ? 'Signing In...' : 'SignIn'}
+            </Button>
+          </form>
+        </div>
+        
       </div>
-      <Card className="w-full max-w-sm">
-        <form onSubmit={handleLogin} className="space-y-5"> {/* Slightly increased spacing */}
-          <h2 className="text-xl font-semibold text-center text-[#393E41]">Login</h2> {/* Dark Gray */}
-          <Input
-            id="email"
-            type="email"
-            label="Email Address" // Changed label
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            autoComplete="email" // Added autocomplete hint
-           />
-          <Input
-            id="password"
-            type="password"
-            label="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            autoComplete="current-password" // Added autocomplete hint
-          />
-          {error && <p className="text-sm text-center text-red-600">{error}</p>} {/* Default red */}
-          <Button type="submit" variant="primary" className="w-full !mt-6" disabled={loading}> {/* Increased top margin */}
-            {loading ? 'Signing In...' : 'Sign In'}
-          </Button>
-        </form>
-      </Card>
-       {/* Demo login info */}
-       <p className="mt-6 text-sm text-[#6C757D]"></p>
     </div>
   );
 };

@@ -96,7 +96,9 @@ const LedgerPage = () => {
   return (
     <div className="space-y-6">
       <header className="flex flex-col md:flex-row justify-between md:items-center gap-4">
+          
           <div>
+              
               <h1 className="text-2xl md:text-3xl font-bold text-[#393E41]">Ledger</h1>
               <p className="mt-1 text-sm md:text-base text-[#6C757D]">Track all income and expenses.</p>
           </div>

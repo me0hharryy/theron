@@ -258,8 +258,8 @@ const ReportsPage = () => {
         <div className="space-y-6">
             <header className="flex flex-col md:flex-row justify-between md:items-center gap-4 mb-4">
                 {/* ... Header content ... */}
-                 <div className='flex items-center gap-3'>
-                    <FiBarChart2 className="w-8 h-8 text-[#44BBA4]" />
+                <div className='flex items-center gap-3'>
+                    
                     <div>
                         <h1 className="text-2xl md:text-3xl font-bold text-[#393E41]">Reports Dashboard</h1>
                         <p className="mt-1 text-sm md:text-base text-[#6C757D]">Business performance overview and downloads.</p>
