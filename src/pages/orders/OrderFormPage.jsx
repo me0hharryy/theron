@@ -16,7 +16,7 @@ import Spinner from '../../components/ui/Spinner';
 // --- Icons ---
 import { FiPlus, FiTrash2, FiUpload, FiTag, FiPlusSquare, FiArrowLeft, FiSave } from 'react-icons/fi';
 
-// --- NEW PDF Imports ---
+// --- NEW PDF Imports (Kept for PDF generation) ---
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 
@@ -73,6 +73,24 @@ const formatDateForDisplay = (dateValue) => {
     if (isNaN(date)) return 'Invalid Date';
     return date.toLocaleDateString('en-GB'); // DD/MM/YYYY
 };
+// --- NEW: Helper to format date/time ---
+const formatDateTime = (timestamp) => {
+    if (!timestamp) return 'N/A';
+    try {
+        let dateObj = null;
+        if (typeof timestamp.toDate === 'function') { dateObj = timestamp.toDate(); }
+        else if (timestamp.seconds) { dateObj = new Date(timestamp.seconds * 1000); }
+        else if (timestamp instanceof Date && !isNaN(timestamp)) { dateObj = timestamp; }
+        else if (typeof timestamp === 'string') {
+            const parsed = new Date(timestamp.replace(/-/g, '/'));
+            if (!isNaN(parsed)) dateObj = parsed;
+        }
+        if (!dateObj || isNaN(dateObj)) return 'N/A';
+        // Format example: 26 Oct 2025, 14:30
+        return dateObj.toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    } catch (error) { console.error('DateTime formatting failed:', error, timestamp); return 'N/A'; }
+};
+
 
 // --- New Order Notification Function (Updated) ---
 const sendNewOrderNotification = (orderData, invoiceUrl = null) => {
@@ -90,7 +108,7 @@ const sendNewOrderNotification = (orderData, invoiceUrl = null) => {
 
     const customerName = customer.name ? `, ${customer.name}` : '';
     const orderId = orderData.billNumber || 'N/A';
-    const deliveryDate = formatDateForDisplay(orderData.deliveryDate); // Expects JS Date
+    const deliveryDate = formatDateForDisplay(orderData.deliveryDate); // Expects JS Date or compatible string
 
     // Create a concise summary of items
     let itemsSummary = '';
@@ -115,7 +133,7 @@ Advance Paid: ${formatCurrency(payment.advance)} (${payment.method || 'N/A'})
 ---------------------`;
 
     // --- NEW: Add the invoice URL to the message if it exists ---
-    const invoiceLink = invoiceUrl 
+    const invoiceLink = invoiceUrl
         ? `\n ● Download your invoice:\n${invoiceUrl}` // 📎 emoji
         : '';
 
@@ -142,11 +160,11 @@ const generateAndUploadInvoicePdf = (orderData) => {
         const deliveryDateFormatted = formatDateForDisplay(orderData.deliveryDate);
         // Using 'Helvetica' (a built-in PDF font) is much safer than @import
         const printStyles = `body{font-family:'Helvetica',sans-serif;margin:20px;line-height:1.5;color:#333;font-size:10pt}h2,h3,h4,h5{margin:0 0 .5em 0;padding:0;line-height:1.3;color:#393E41}p{margin:0 0 .3em 0}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border-bottom:1px solid #eee;padding:.4em .5em;text-align:left;vertical-align:top}th{background-color:#f8f9fa;font-weight:600;font-size:.9em;text-transform:uppercase;color:#6C757D}td:last-child,th:last-child{text-align:right}strong{font-weight:600}.invoice-header{text-align:center;margin-bottom:1.5em;border-bottom:2px solid #eee;padding-bottom:1em}.invoice-header h2{font-size:1.8em;font-weight:700;color:#44BBA4;margin-bottom:.1em}.invoice-header p{font-size:.85em;color:#555}.details-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.5em;margin-bottom:1.5em;padding-bottom:1em;border-bottom:1px dashed #ccc}.details-grid h5{font-size:1em;font-weight:600;color:#44BBA4;margin-bottom:.5em;border-bottom:1px solid #eee;padding-bottom:.3em}.details-grid p{font-size:.9em;color:#555}.items-section h3{font-size:1.1em;font-weight:600;margin-bottom:.5em}.item-notes{font-size:.8em;color:#666;font-style:italic;padding-left:1em;margin-top:.2em}.totals-section{display:flex;justify-content:flex-end;margin-top:1.5em;padding-top:1em;border-top:2px solid #eee}.totals-box{width:100%;max-width:280px;font-size:.9em}.totals-box div{display:flex;justify-content:space-between;margin-bottom:.3em}.totals-box span:first-child{color:#555;padding-right:1em}.totals-box span:last-child{font-weight:600;color:#333;min-width:80px;text-align:right;font-family:monospace}.totals-box .grand-total span{font-weight:700;font-size:1.1em;color:#393E41}.totals-box .due span:last-child{color:#D97706}.footer{margin-top:2em;text-align:center;font-size:.8em;color:#888;border-top:1px dashed #ccc;padding-top:.8em}.no-print,.no-print-invoice,.measurement-section-for-print{display:none!important}`;
-        
+
         const validPeopleForPrint = orderData.people?.filter(p => p.name && p.items?.some(i => i.name)) || [];
         const additionalFees = orderData.payment?.additionalFees || [];
         const paymentHistory = orderData.payment?.paymentHistory || [];
-        const invoiceHTML = `<div class="invoice-header"><h2>New Welcome Tailors</h2><p>Order Slip / Invoice</p><p>Order ID: <strong>${orderData.billNumber || 'N/A'}</strong></p></div><div class="details-grid"><div><h5>Customer Details:</h5><p>Name: ${orderData.customer?.name || 'N/A'}</p><p>Phone: ${orderData.customer?.number || 'N/A'}</p></div><div><h5>Order Dates:</h5><p>Order Date: ${orderDateFormatted}</p><p>Delivery Date: ${deliveryDateFormatted}</p></div></div><div class="items-section"><h3>Order Items</h3><table><thead><tr><th>#</th><th>Person</th><th>Item</th><th>Price</th></tr></thead><tbody>${validPeopleForPrint.flatMap((person, pIdx) => person.items.map((item, iIdx) => `<tr><td>${pIdx * (person.items?.length || 0) + iIdx + 1}</td><td>${person.name || `Person ${pIdx + 1}`}</td><td> ${item.name || 'N/A'} ${item.notes ? `<div class="item-notes">Notes: ${item.notes}</div>` : ''} </td><td>${formatCurrency(item.price)}</td></tr>`)).join('')}</tbody></table></div><div class="totals-section"><div class="totals-box"><div><span>Subtotal:</span> <span>${formatCurrency(orderData.payment?.subtotal)}</span></div> ${additionalFees.map(fee => `<div><span>${fee.description || 'Additional Fee'}:</span> <span>${formatCurrency(fee.amount)}</span></div>`).join('')} ${orderData.payment?.calculatedDiscount > 0 ? `<div><span>Discount (${orderData.payment?.discountType === 'percent' ? `${orderData.payment?.discountValue}%` : 'Fixed'}):</span> <span>-${formatCurrency(orderData.payment?.calculatedDiscount)}</span></div>` : ''} <div class="grand-total" style="border-top: 1px solid #ccc; padding-top: 0.3em; margin-top: 0.3em;"><span>Grand Total:</span> <span>${formatCurrency(orderData.payment?.total)}</span></div><div><span>Total Paid:</span> <span>${formatCurrency(orderData.payment?.advance)}</span></div><div class="due"><span>Amount Due:</span> <span>${formatCurrency(orderData.payment?.pending)}</span></div></div></div> ${paymentHistory.length > 0 ? `<div style="margin-top: 1.5em; border-top: 1px dashed #ccc; padding-top: 1em;"><h5 style="font-size: 1em; margin-bottom: 0.3em;">Payment History:</h5><ul style="font-size:0.85em; padding-left: 1em; list-style:none;">${paymentHistory.map(p => `<li>${formatDateForDisplay(p.date?.toDate ? p.date.toDate() : p.date)} - ${formatCurrency(p.amount)} (${p.method})${p.notes && p.notes !== 'Initial Advance Payment' ? ` - ${p.notes}` : ''}</li>`).join('')}</ul></div>` : ''} ${orderData.notes ? `<div style="margin-top: 1.5em; border-top: 1px dashed #ccc; padding-top: 1em;"><h5 style="font-size: 1em; margin-bottom: 0.3em;">Order Notes:</h5><p style="font-size: 0.85em; white-space: pre-wrap;">${orderData.notes}</p></div>` : ''} <div class="footer">Thank you!</div>`;
+        const invoiceHTML = `<div class="invoice-header"><h2>New Welcome Tailors</h2><p>Order Slip / Invoice</p><p>Order ID: <strong>${orderData.billNumber || 'N/A'}</strong></p></div><div class="details-grid"><div><h5>Customer Details:</h5><p>Name: ${orderData.customer?.name || 'N/A'}</p><p>Phone: ${orderData.customer?.number || 'N/A'}</p></div><div><h5>Order Dates:</h5><p>Order Date: ${orderDateFormatted}</p><p>Delivery Date: ${deliveryDateFormatted}</p></div></div><div class="items-section"><h3>Order Items</h3><table><thead><tr><th>#</th><th>Person</th><th>Item</th><th>Price</th></tr></thead><tbody>${validPeopleForPrint.flatMap((person, pIdx) => person.items.map((item, iIdx) => `<tr><td>${pIdx * (person.items?.length || 0) + iIdx + 1}</td><td>${person.name || `Person ${pIdx + 1}`}</td><td> ${item.name || 'N/A'} ${item.notes ? `<div class="item-notes">Notes: ${item.notes}</div>` : ''} </td><td>${formatCurrency(item.price)}</td></tr>`)).join('')}</tbody></table></div><div class="totals-section"><div class="totals-box"><div><span>Subtotal:</span> <span>${formatCurrency(orderData.payment?.subtotal)}</span></div> ${additionalFees.map(fee => `<div><span>${fee.description || 'Additional Fee'}:</span> <span>${formatCurrency(fee.amount)}</span></div>`).join('')} ${orderData.payment?.calculatedDiscount > 0 ? `<div><span>Discount (${orderData.payment?.discountType === 'percent' ? `${orderData.payment?.discountValue}%` : 'Fixed'}):</span> <span>-${formatCurrency(orderData.payment?.calculatedDiscount)}</span></div>` : ''} <div class="grand-total" style="border-top: 1px solid #ccc; padding-top: 0.3em; margin-top: 0.3em;"><span>Grand Total:</span> <span>${formatCurrency(orderData.payment?.total)}</span></div><div><span>Total Paid:</span> <span>${formatCurrency(orderData.payment?.advance)}</span></div><div class="due"><span>Amount Due:</span> <span>${formatCurrency(orderData.payment?.pending)}</span></div></div></div> ${paymentHistory.length > 0 ? `<div style="margin-top: 1.5em; border-top: 1px dashed #ccc; padding-top: 1em;"><h5 style="font-size: 1em; margin-bottom: 0.3em;">Payment History:</h5><ul style="font-size:0.85em; padding-left: 1em; list-style:none;">${paymentHistory.map(p => `<li>${formatDateTime(p.date?.toDate ? p.date.toDate() : p.date)} - ${formatCurrency(p.amount)} (${p.method})${p.notes && p.notes !== 'Initial Advance Payment' ? ` - ${p.notes}` : ''}</li>`).join('')}</ul></div>` : ''} ${orderData.notes ? `<div style="margin-top: 1.5em; border-top: 1px dashed #ccc; padding-top: 1em;"><h5 style="font-size: 1em; margin-bottom: 0.3em;">Order Notes:</h5><p style="font-size: 0.85em; white-space: pre-wrap;">${orderData.notes}</p></div>` : ''} <div class="footer">Thank you!</div>`;
 
         // --- 2. Create an invisible iframe ---
         const iframe = document.createElement('iframe');
@@ -170,17 +188,17 @@ const generateAndUploadInvoicePdf = (orderData) => {
                 const pdf = new jsPDF('p', 'mm', 'a4');
                 const pdfWidth = pdf.internal.pageSize.getWidth();
                 const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-                
+
                 pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
                 const pdfBlob = pdf.output('blob');
 
                 // --- 6. Upload Blob to Firebase Storage ---
                 const storageRef = ref(storage, `invoices/${orderData.billNumber}.pdf`);
                 const snapshot = await uploadBytes(storageRef, pdfBlob);
-                
+
                 // --- 7. Get and return the Download URL ---
                 const downloadURL = await getDownloadURL(snapshot.ref);
-                
+
                 // --- 8. Clean up iframe and resolve the promise ---
                 document.body.removeChild(iframe);
                 resolve(downloadURL);
@@ -191,7 +209,7 @@ const generateAndUploadInvoicePdf = (orderData) => {
                 reject(error);
             }
         };
-        
+
         // --- 9. Set the iframe content using srcdoc and append to trigger onload ---
         iframe.srcdoc = `<html><head><style>${printStyles}</style></head><body>${invoiceHTML}</body></html>`;
         document.body.appendChild(iframe);
@@ -582,73 +600,55 @@ const OrderFormPage = () => {
   }, [order.people, order.payment.additionalFees, order.payment.discountType, order.payment.discountValue, order.payment.advance, order.payment]);
 
 
-  // --- PRINT INVOICE FUNCTION (Internal) ---
-  const printInvoice = (orderData) => {
-        if (!orderData) { console.error("No order data for printInvoice."); return; }
-        const printWindow = window.open('', '_blank', 'height=800,width=800');
-        if (!printWindow) { alert("Please allow popups to print."); return; }
-        // Styles remain the same...
-        const printStyles = `body{font-family:'Helvetica',sans-serif;margin:20px;line-height:1.5;color:#333;font-size:10pt}h2,h3,h4,h5{margin:0 0 .5em 0;padding:0;line-height:1.3;color:#393E41}p{margin:0 0 .3em 0}table{width:100%;border-collapse:collapse;margin-bottom:1em}th,td{border-bottom:1px solid #eee;padding:.4em .5em;text-align:left;vertical-align:top}th{background-color:#f8f9fa;font-weight:600;font-size:.9em;text-transform:uppercase;color:#6C757D}td:last-child,th:last-child{text-align:right}strong{font-weight:600}.invoice-header{text-align:center;margin-bottom:1.5em;border-bottom:2px solid #eee;padding-bottom:1em}.invoice-header h2{font-size:1.8em;font-weight:700;color:#44BBA4;margin-bottom:.1em}.invoice-header p{font-size:.85em;color:#555}.details-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.5em;margin-bottom:1.5em;padding-bottom:1em;border-bottom:1px dashed #ccc}.details-grid h5{font-size:1em;font-weight:600;color:#44BBA4;margin-bottom:.5em;border-bottom:1px solid #eee;padding-bottom:.3em}.details-grid p{font-size:.9em;color:#555}.items-section h3{font-size:1.1em;font-weight:600;margin-bottom:.5em}.item-notes{font-size:.8em;color:#666;font-style:italic;padding-left:1em;margin-top:.2em}.totals-section{display:flex;justify-content:flex-end;margin-top:1.5em;padding-top:1em;border-top:2px solid #eee}.totals-box{width:100%;max-width:280px;font-size:.9em}.totals-box div{display:flex;justify-content:space-between;margin-bottom:.3em}.totals-box span:first-child{color:#555;padding-right:1em}.totals-box span:last-child{font-weight:600;color:#333;min-width:80px;text-align:right;font-family:monospace}.totals-box .grand-total span{font-weight:700;font-size:1.1em;color:#393E41}.totals-box .due span:last-child{color:#D97706}.footer{margin-top:2em;text-align:center;font-size:.8em;color:#888;border-top:1px dashed #ccc;padding-top:.8em}.no-print,.no-print-invoice,.measurement-section-for-print{display:none!important}`;
-        const validPeopleForPrint = orderData.people?.filter(p => p.name && p.items?.some(i => i.name)) || [];
-        const additionalFees = orderData.payment?.additionalFees || [];
-        const paymentHistory = orderData.payment?.paymentHistory || [];
-        // Generate Invoice HTML
-        // Modify payment summary section in invoiceHTML
-        const invoiceHTML = `<div class="invoice-header"><h2>New Welcome Taiors</h2><p>Order Slip / Invoice</p><p>Order ID: <strong>${orderData.billNumber || 'N/A'}</strong></p></div><div class="details-grid"><div><h5>Customer Details:</h5><p>Name: ${orderData.customer?.name || 'N/A'}</p><p>Phone: ${orderData.customer?.number || 'N/A'}</p></div><div><h5>Order Dates:</h5><p>Order Date: ${formatDateForDisplay(orderData.orderDate)}</p><p>Delivery Date: ${formatDateForDisplay(orderData.deliveryDate)}</p></div></div><div class="items-section"><h3>Order Items</h3><table><thead><tr><th>#</th><th>Person</th><th>Item</th><th>Price</th></tr></thead><tbody>${validPeopleForPrint.flatMap((person, pIdx) => person.items.map((item, iIdx) => `<tr><td>${pIdx * (person.items?.length || 0) + iIdx + 1}</td><td>${person.name || `Person ${pIdx + 1}`}</td><td> ${item.name || 'N/A'} ${item.notes ? `<div class="item-notes">Notes: ${item.notes}</div>` : ''} </td><td>${formatCurrency(item.price)}</td></tr>`)).join('')}</tbody></table></div><div class="totals-section"><div class="totals-box"><div><span>Subtotal:</span> <span>${formatCurrency(orderData.payment?.subtotal)}</span></div> ${additionalFees.map(fee => `<div><span>${fee.description || 'Additional Fee'}:</span> <span>${formatCurrency(fee.amount)}</span></div>`).join('')} ${orderData.payment?.calculatedDiscount > 0 ? `<div><span>Discount (${orderData.payment?.discountType === 'percent' ? `${orderData.payment?.discountValue}%` : 'Fixed'}):</span> <span>-${formatCurrency(orderData.payment?.calculatedDiscount)}</span></div>` : ''} <div class="grand-total" style="border-top: 1px solid #ccc; padding-top: 0.3em; margin-top: 0.3em;"><span>Grand Total:</span> <span>${formatCurrency(orderData.payment?.total)}</span></div><div><span>Total Paid:</span> <span>${formatCurrency(orderData.payment?.advance)}</span></div><div class="due"><span>Amount Due:</span> <span>${formatCurrency(orderData.payment?.pending)}</span></div></div></div> ${paymentHistory.length > 0 ? `<div style="margin-top: 1.5em; border-top: 1px dashed #ccc; padding-top: 1em;"><h5 style="font-size: 1em; margin-bottom: 0.3em;">Payment History:</h5><ul style="font-size:0.85em; padding-left: 1em; list-style:none;">${paymentHistory.map(p => `<li>${formatDateForDisplay(p.date?.toDate ? p.date.toDate() : p.date)} - ${formatCurrency(p.amount)} (${p.method})${p.notes && p.notes !== 'Initial Advance Payment' ? ` - ${p.notes}` : ''}</li>`).join('')}</ul></div>` : ''} ${orderData.notes ? `<div style="margin-top: 1.5em; border-top: 1px dashed #ccc; padding-top: 1em;"><h5 style="font-size: 1em; margin-bottom: 0.3em;">Order Notes:</h5><p style="font-size: 0.85em; white-space: pre-wrap;">${orderData.notes}</p></div>` : ''} <div class="footer">Crafted with care, tailored for you.</div><div class="footer">Powered by THERON</div>`;
-        printWindow.document.write(`<html><head><title>Invoice: ${orderData.billNumber || 'Order'}</title><style>${printStyles}</style></head><body>${invoiceHTML}</body></html>`);
-        printWindow.document.close();
-        printWindow.focus();
-        setTimeout(() => { printWindow.print(); printWindow.close(); }, 300);
-  };
+  // --- PRINT INVOICE FUNCTION (REMOVED) ---
 
 
   // --- Form Submission (Updated) ---
   const handleSubmitOrder = async (e) => {
       e.preventDefault();
-      setIsSaving(true);
 
-      // --- Validation ---
+      // --- Validation (remains the same) ---
       if (!order.customer.name || !order.customer.number) { alert("Customer Name and Number required."); setIsSaving(false); setCurrentStep(1); return; }
       if (!order.deliveryDate) { alert("Delivery Date required."); setIsSaving(false); setCurrentStep(1); return; }
-      // Filter people with a name and at least one item *with a name*
       const validPeople = order.people?.map(person => ({
           ...person,
-          name: person.name.trim(), // Trim person name
-          items: person.items?.filter(item => item.name && item.name.trim()) || [] // Filter items with names
-      })).filter(person => person.name && person.items.length > 0) || []; // Filter people with names and valid items
-
+          name: person.name.trim(),
+          items: person.items?.filter(item => item.name && item.name.trim()) || []
+      })).filter(person => person.name && person.items.length > 0) || [];
       if (validPeople.length === 0) { alert("Order must have at least one person with a name and one item with a name selected."); setIsSaving(false); setCurrentStep(2); return; }
-      // Check if any added person is missing a name
       if (order.people.some(person => !person.name?.trim())) { alert("Please enter a name for every person added."); setIsSaving(false); setCurrentStep(2); return; }
       // --- End Validation ---
 
-      // Prepare delivery date timestamp
+      // --- *** REMOVED: Open print window EARLY *** ---
+
+      setIsSaving(true); // Start saving indicator
+
+      // Prepare delivery date timestamp (remains the same)
       let deliveryTimestamp;
       try {
-          // Ensure time part is handled correctly (set to start of day UTC for consistency)
           deliveryTimestamp = Timestamp.fromDate(new Date(order.deliveryDate + 'T00:00:00Z'));
       } catch (dateError) {
           console.error("Error converting delivery date:", dateError);
           alert("Invalid Delivery Date format. Please check the date.");
           setIsSaving(false);
+          // --- REMOVED: Close print window ---
           return;
       }
 
-      // --- Prepare Initial Payment Record ---
+      // Prepare Initial Payment Record (remains the same)
       const initialAdvanceAmount = Number(order.payment.advance) || 0;
       const initialPaymentMethod = order.payment.method || 'Cash';
       const initialPaymentHistory = [];
-      if (!orderId && initialAdvanceAmount > 0) { // Only add initial advance record for NEW orders
+      if (!orderId && initialAdvanceAmount > 0) {
            initialPaymentHistory.push({
-                date: Timestamp.now(), // Use current time for the initial record
+                date: Timestamp.now(),
                 amount: initialAdvanceAmount,
                 method: initialPaymentMethod,
                 notes: 'Initial Advance Payment'
             });
        }
-       // --- End Initial Payment Record Prep ---
 
-
+      // Prepare dataToSave (remains the same)
       const dataToSave = {
         customer: { name: order.customer.name.trim(), number: order.customer.number.trim(), email: order.customer.email?.trim() || '' },
         deliveryDate: deliveryTimestamp,
@@ -660,18 +660,18 @@ const OrderFormPage = () => {
             calculatedDiscount: order.payment.calculatedDiscount || 0,
             additionalFees: (order.payment.additionalFees || [])
                 .filter(fee => fee.description && fee.description.trim() !== '' && fee.amount >= 0)
-                .map(fee => ({ description: fee.description.trim(), amount: fee.amount })), // Save only desc and amount
+                .map(fee => ({ description: fee.description.trim(), amount: fee.amount })),
             total: order.payment.total || 0,
-            advance: initialAdvanceAmount, // Save initial advance here (represents total paid initially)
-            pending: order.payment.pending || 0, // Pending calculation should already be correct based on initial advance
-            method: initialPaymentMethod, // Store the method of the *initial* advance
-            paymentHistory: initialPaymentHistory // <--- Save the initial history (empty if updating)
+            advance: initialAdvanceAmount,
+            pending: order.payment.pending || 0,
+            method: initialPaymentMethod,
+            paymentHistory: initialPaymentHistory
         },
         people: validPeople.map(person => ({
             ...person,
             items: person.items.map(item => ({
-                id: item.id || crypto.randomUUID(), // Ensure ID exists
-                name: item.name.trim(), // Trim item name
+                id: item.id || crypto.randomUUID(),
+                name: item.name.trim(),
                 price: Number(item.price) || 0,
                 measurements: Object.entries(item.measurements || {}).filter(([, value]) => value && String(value).trim() !== '').reduce((obj, [key, value]) => { obj[key] = String(value).trim(); return obj; }, {}),
                 notes: item.notes?.trim() || '',
@@ -682,11 +682,10 @@ const OrderFormPage = () => {
             }))
         })),
         updatedAt: Timestamp.now(),
-        // Only set orderDate on creation, preserve existing on update
         ...( !orderId && { orderDate: order.orderDate instanceof Timestamp ? order.orderDate : Timestamp.now() } ),
-        ...( orderId && order.orderDate instanceof Timestamp && { orderDate: order.orderDate }), // Keep original orderDate if editing
-        billNumber: order.billNumber || `TH-${Date.now()}`, // Keep existing or generate new
-        status: order.status || 'Active', // Maintain or default status
+        ...( orderId && order.orderDate instanceof Timestamp && { orderDate: order.orderDate }),
+        billNumber: order.billNumber || `TH-${Date.now()}`,
+        status: order.status || 'Active',
       };
 
       // Firestore Logic
@@ -695,7 +694,7 @@ const OrderFormPage = () => {
         const transactionCollectionPath = getCollectionPath('transactions');
         let savedDataForNotification = null;
         let currentOrderId = orderId;
-        let currentBillNumber = dataToSave.billNumber;
+        // let currentBillNumber = dataToSave.billNumber; // Not needed as we don't ask to print later
         let isNewOrder = false;
 
         if (orderId) { // UPDATE
@@ -704,21 +703,17 @@ const OrderFormPage = () => {
             const existingData = existingOrderDoc.data();
             const existingPaymentHistory = existingData?.payment?.paymentHistory || [];
 
-            // --- Update Handling for Advance/History ---
-            // Keep existing history. Subsequent payments are handled in OrderList page.
-            // Recalculate total paid based on the *existing* history.
+            // Update Handling (remains the same)
             const totalPaidFromHistory = existingPaymentHistory.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
-            dataToSave.payment.advance = totalPaidFromHistory; // 'advance' now means total paid from history
+            dataToSave.payment.advance = totalPaidFromHistory;
             dataToSave.payment.pending = dataToSave.payment.total - totalPaidFromHistory;
-            dataToSave.payment.paymentHistory = existingPaymentHistory; // Preserve existing history on update via form
-            // NOTE: The initial advance amount/method might be edited here, but it doesn't add a *new* history entry via the form.
-            // Consider if editing the *first* history entry is needed, but that adds complexity. Let's keep it simple for now.
+            dataToSave.payment.paymentHistory = existingPaymentHistory;
 
             await updateDoc(doc(db, orderCollectionPath, orderId), dataToSave);
             savedDataForNotification = {
                 id: orderId, ...dataToSave,
                 deliveryDate: dataToSave.deliveryDate.toDate(),
-                orderDate: dataToSave.orderDate?.toDate ? dataToSave.orderDate.toDate() : existingData.orderDate?.toDate ? existingData.orderDate.toDate() : null // Use existing if needed
+                 orderDate: (dataToSave.orderDate?.toDate ? dataToSave.orderDate.toDate() : existingData.orderDate?.toDate ? existingData.orderDate.toDate() : null) ?? new Date() // Provide fallback
              };
 
         } else { // CREATE
@@ -726,22 +721,21 @@ const OrderFormPage = () => {
             const batch = writeBatch(db);
             const newOrderRef = doc(collection(db, orderCollectionPath));
             currentOrderId = newOrderRef.id;
-            // Use the potentially updated bill number from state
             const finalBillNumber = dataToSave.billNumber || `TH-${Date.now()}`;
             const finalDataToSave = { ...dataToSave, id: currentOrderId, billNumber: finalBillNumber };
-            currentBillNumber = finalBillNumber; // Update for notification/confirmation
-            batch.set(newOrderRef, finalDataToSave); // Save the complete data including initial payment history
+            // currentBillNumber = finalBillNumber; // Not needed
+            batch.set(newOrderRef, finalDataToSave);
 
-            // Add transaction ONLY for the initial advance during CREATION
+            // Add transaction (remains the same)
             if (finalDataToSave.payment.advance > 0 && finalDataToSave.payment.paymentHistory.length > 0) {
                  const newTransactionRef = doc(collection(db, transactionCollectionPath));
                  batch.set(newTransactionRef, {
-                    date: finalDataToSave.payment.paymentHistory[0].date, // Use date from history
+                    date: finalDataToSave.payment.paymentHistory[0].date,
                     type: 'Income',
                     description: `Advance for Order ${finalBillNumber}`,
-                    amount: finalDataToSave.payment.advance, // Amount of initial advance
-                    orderRef: currentOrderId, // Link transaction to order
-                    paymentMethod: finalDataToSave.payment.method // Store initial method
+                    amount: finalDataToSave.payment.advance,
+                    orderRef: currentOrderId,
+                    paymentMethod: finalDataToSave.payment.method
                  });
             }
 
@@ -750,39 +744,38 @@ const OrderFormPage = () => {
              savedDataForNotification = {
                 ...finalDataToSave,
                 deliveryDate: finalDataToSave.deliveryDate.toDate(),
-                orderDate: finalDataToSave.orderDate.toDate()
+                 orderDate: finalDataToSave.orderDate.toDate() ?? new Date() // Provide fallback
             };
         }
 
-        // --- NEW: PDF Generation & Notification Logic ---
+        // PDF Generation & Notification Logic (remains the same)
         let invoiceUrl = null;
         if (isNewOrder && savedDataForNotification) {
              try {
-                // Let user know the PDF is generating
                 console.log("Generating & uploading PDF invoice...");
-                // This will generate, upload, and return the public URL
                 invoiceUrl = await generateAndUploadInvoicePdf(savedDataForNotification);
                 console.log("PDF successfully uploaded:", invoiceUrl);
              } catch (pdfError) {
                 console.error("Failed to generate or upload PDF invoice:", pdfError);
                 alert("Order was saved, but the PDF invoice failed to generate or upload. You can print it manually.");
-                // We don't stop; the notification will just send without the link.
              }
-             
-             // Send notification, now with the invoiceUrl (which is null if PDF failed)
+             // Send notification *after* PDF generation (success or fail)
              sendNewOrderNotification(savedDataForNotification, invoiceUrl);
         }
-        // --- END NEW LOGIC ---
 
-        // Ask for print confirmation
-        if (window.confirm(`Order ${isNewOrder ? 'placed' : 'updated'} successfully! (ID: ${currentBillNumber})\n\nPrint invoice manually?`)) {
-            printInvoice(savedDataForNotification);
-        }
+        // --- *** REMOVED: Printing Logic *** ---
 
         navigate('/orders'); // Navigate back to list
 
-      } catch (error) { console.error("Error saving order: ", error); alert(`Failed to save order: ${error.message}`); }
-      finally { setIsSaving(false); }
+      } catch (error) {
+          console.error("Error saving order: ", error);
+          alert(`Failed to save order: ${error.message}`);
+          // --- REMOVED: Close print window ---
+      }
+      finally {
+          setIsSaving(false);
+          // --- REMOVED: Close print window ---
+      }
   };
 
 

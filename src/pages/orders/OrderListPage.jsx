@@ -298,7 +298,7 @@ const OrderListPage = () => {
             case 'Sewing': statusMessage = `*Progress update!* '${itemName}' has moved to sewing.`; break;
             case 'Ready for Trial': statusMessage = `*Almost there!* '${itemName}' is ready for trial. Please let us know when you'd like to come in.`; break;
             case 'Delivered': statusMessage = `*√* Your item '${itemName}' has been marked as delivered. We hope you enjoy it!`; break;
-            case 'Received': statusMessage = `👍 *Order received!* We've started processing '${itemName}'.`; break;
+            case 'Received': statusMessage = `*Order received!* We've started processing '${itemName}'.`; break;
             default: statusMessage = `'${itemName}' status is now '${itemStatus}'.`;
         }
         const message = `Namaste *${customerName}*,\nUpdate from New Welcome Tailors (Order ${orderId}):\n${statusMessage}\n\n*Thank you!*`;
