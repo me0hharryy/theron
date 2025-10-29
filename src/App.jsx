@@ -15,7 +15,7 @@ import WorkersPage from './pages/workers/WorkersPage';
 import WorkerDetailPage from './pages/workers/WorkerDetailPage'; 
 import LedgerPage from './pages/ledger/LedgerPage';
 import ReportsPage from './pages/ReportsPage';
-
+import CustomerDirectoryPage from './pages/customers/CustomerDirectoryPage';
 function App() {
   return (
     <AuthProvider>
@@ -39,6 +39,7 @@ function App() {
           <Route path="ledger" element={<LedgerPage />} />
           <Route path="reports" element={<ReportsPage />} />
           <Route path="fees" element={<AdditionalFeesPage />} />
+          <Route path="customers" element={<CustomerDirectoryPage />} />
         </Route>
       </Routes>
     </AuthProvider>

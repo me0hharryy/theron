@@ -10,7 +10,7 @@ import logoCollapsed from '../../assets/logo2.svg'; // Assuming logo2.svg is in 
 // --- Icons --- (Using react-icons/fi)
 import {
     FiGrid, FiFileText, FiSettings, FiUsers, FiDollarSign, FiBarChart2,
-    FiChevronsLeft, FiChevronsRight, FiTag,
+    FiChevronsLeft, FiChevronsRight, FiTag, FiBookOpen
 } from 'react-icons/fi';
 
 // Wrapper ensures consistent icon size and centers content vertically
@@ -31,6 +31,7 @@ const Sidebar = ({ isCollapsed, toggleSidebar }) => {
   const menuItems = [
     { name: 'Dashboard', path: '/dashboard', role: ['owner', 'employee'], icon: <FiGrid /> },
     { name: 'Orders', path: '/orders', role: ['owner', 'employee'], icon: <FiFileText /> },
+    { name: 'Customers', path: '/customers', role: ['owner', 'employee'], icon: <FiBookOpen /> },
     { name: 'Masters', path: '/masters', role: ['owner'], icon: <FiSettings /> },
     { name: 'Fees/Extras', path: '/fees', role: ['owner'], icon: <FiTag /> }, // Added link to fees page
     { name: 'Workers', path: '/workers', role: ['owner'], icon: <FiUsers /> },
